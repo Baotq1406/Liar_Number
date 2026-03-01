@@ -1,0 +1,14 @@
+D:\UnityLearn\Liar's Number\LiarNumberServer\LiarNumberServer\bin\Debug\net8.0\LiarNumberServer.exe
+D:\UnityLearn\Liar's Number\LiarNumberServer\LiarNumberServer\bin\Debug\net8.0\LiarNumberServer.deps.json
+D:\UnityLearn\Liar's Number\LiarNumberServer\LiarNumberServer\bin\Debug\net8.0\LiarNumberServer.runtimeconfig.json
+D:\UnityLearn\Liar's Number\LiarNumberServer\LiarNumberServer\bin\Debug\net8.0\LiarNumberServer.dll
+D:\UnityLearn\Liar's Number\LiarNumberServer\LiarNumberServer\bin\Debug\net8.0\LiarNumberServer.pdb
+D:\UnityLearn\Liar's Number\LiarNumberServer\LiarNumberServer\obj\Debug\net8.0\LiarNumberServer.GeneratedMSBuildEditorConfig.editorconfig
+D:\UnityLearn\Liar's Number\LiarNumberServer\LiarNumberServer\obj\Debug\net8.0\LiarNumberServer.AssemblyInfoInputs.cache
+D:\UnityLearn\Liar's Number\LiarNumberServer\LiarNumberServer\obj\Debug\net8.0\LiarNumberServer.AssemblyInfo.cs
+D:\UnityLearn\Liar's Number\LiarNumberServer\LiarNumberServer\obj\Debug\net8.0\LiarNumberServer.csproj.CoreCompileInputs.cache
+D:\UnityLearn\Liar's Number\LiarNumberServer\LiarNumberServer\obj\Debug\net8.0\LiarNumberServer.dll
+D:\UnityLearn\Liar's Number\LiarNumberServer\LiarNumberServer\obj\Debug\net8.0\refint\LiarNumberServer.dll
+D:\UnityLearn\Liar's Number\LiarNumberServer\LiarNumberServer\obj\Debug\net8.0\LiarNumberServer.pdb
+D:\UnityLearn\Liar's Number\LiarNumberServer\LiarNumberServer\obj\Debug\net8.0\LiarNumberServer.genruntimeconfig.cache
+D:\UnityLearn\Liar's Number\LiarNumberServer\LiarNumberServer\obj\Debug\net8.0\ref\LiarNumberServer.dll
