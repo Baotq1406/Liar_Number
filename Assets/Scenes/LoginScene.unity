@@ -1006,7 +1006,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!224 &1032542443
 RectTransform:
   m_ObjectHideFlags: 0
@@ -1667,7 +1667,7 @@ MonoBehaviour:
   nameInput: {fileID: 596060883}
   loginButton: {fileID: 1841489179}
   panelNotify: {fileID: 1032542442}
-  okButton: {fileID: 0}
+  okButton: {fileID: 7138001309117715955}
 --- !u!4 &1592207902
 Transform:
   m_ObjectHideFlags: 0
@@ -1712,7 +1712,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 353393f0795e8bb4a97647aba3b49e14, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  serverHost: 192.168.1.62
+  serverHost: 192.168.1.55
   serverPort: 5555
 --- !u!4 &1682570694
 Transform:

@@ -9,7 +9,7 @@ namespace LiarNumberServer
             Console.WriteLine("=== Liar's Number Server ===");
 
             // Tao game server voi IP va port
-            var server = new GameServer("192.168.1.62", 5555);
+            var server = new GameServer("192.168.1.55", 5555);
             
             // Bat dau lang nghe ket noi
             server.Start();

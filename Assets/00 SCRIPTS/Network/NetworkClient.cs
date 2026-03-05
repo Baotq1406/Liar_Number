@@ -9,7 +9,7 @@ using UnityEngine;
 public class NetworkClient : Singleton<NetworkClient>
 {
     [Header("Cau hinh server")]
-    [SerializeField] private string serverHost = "192.168.1.62";
+    [SerializeField] private string serverHost = "192.168.1.55";
     [SerializeField] private int serverPort = 5555;
 
     private TcpClient _client;
