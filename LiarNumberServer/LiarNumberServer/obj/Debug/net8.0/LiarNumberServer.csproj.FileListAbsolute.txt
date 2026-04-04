@@ -12,3 +12,4 @@ D:\UnityLearn\Liar's Number\LiarNumberServer\LiarNumberServer\obj\Debug\net8.0\r
 D:\UnityLearn\Liar's Number\LiarNumberServer\LiarNumberServer\obj\Debug\net8.0\LiarNumberServer.pdb
 D:\UnityLearn\Liar's Number\LiarNumberServer\LiarNumberServer\obj\Debug\net8.0\LiarNumberServer.genruntimeconfig.cache
 D:\UnityLearn\Liar's Number\LiarNumberServer\LiarNumberServer\obj\Debug\net8.0\ref\LiarNumberServer.dll
+D:\UnityLearn\Liar's Number\LiarNumberServer\LiarNumberServer\obj\Debug\net8.0\LiarNumberServer.sourcelink.json

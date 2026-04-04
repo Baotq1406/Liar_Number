@@ -1,6 +1,7 @@
 using System.Text.Json;
 using LiarNumberServer.Messages;
 using LiarNumberServer.Handlers;
+using LiarNumberServer.Managers;
 
 namespace LiarNumberServer.Network
 {
@@ -8,17 +9,24 @@ namespace LiarNumberServer.Network
     {
         private readonly Dictionary<string, Action<string, ClientConnection>> _handlers;
         private readonly LobbyHandler _lobbyHandler;
+        private readonly RoomHandler _roomHandler;
 
         // Expose LobbyHandler de cho phep cleanup khi client disconnect
         public LobbyHandler LobbyHandler => _lobbyHandler;
+        public RoomHandler RoomHandler => _roomHandler;
 
         public MessageRouter()
         {
             _handlers = new Dictionary<string, Action<string, ClientConnection>>();
             _lobbyHandler = new LobbyHandler();
+            _roomHandler = new RoomHandler(new RoomManager());
 
             // Dang ky cac handler cho tung loai message
             RegisterHandler("JoinLobby", _lobbyHandler.HandleJoinLobby);
+            RegisterHandler("CreateRoom", _roomHandler.HandleCreateRoom);
+            RegisterHandler("JoinRoom", _roomHandler.HandleJoinRoom);
+            RegisterHandler("LeaveRoom", _roomHandler.HandleLeaveRoom);
+            RegisterHandler("CancelRoom", _roomHandler.HandleCancelRoom);
             RegisterHandler("Ready", HandleReady);
             RegisterHandler("PlayCard", HandlePlayCard);
             RegisterHandler("CallLiar", HandleCallLiar);

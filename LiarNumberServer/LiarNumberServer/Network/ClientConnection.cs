@@ -17,6 +17,7 @@ namespace LiarNumberServer.Network
         // Thong tin nguoi choi (duoc gan sau khi login)
         public string? PlayerId { get; set; }
         public string? Nickname { get; set; }
+        public string? CurrentRoomId { get; set; }
         
         // ID ket noi unique de phan biet log
         public string ConnectionId { get; }
@@ -124,6 +125,8 @@ namespace LiarNumberServer.Network
             
             // Log thong tin truoc khi dong
             Console.WriteLine($"[ClientConnection] [{ConnectionId}] Ngat ket noi - PlayerId: {PlayerId ?? "None"}, Nickname: {Nickname ?? "None"}");
+
+            _router.RoomHandler.HandleDisconnect(this);
             
             // Cleanup lobby handler neu co nickname
             if (!string.IsNullOrEmpty(Nickname))
