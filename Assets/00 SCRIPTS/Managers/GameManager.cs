@@ -1,4 +1,6 @@
 using UnityEngine;
+using System;
+using System.Collections.Generic;
 
 public class GameManager : Singleton<GameManager>
 {
@@ -6,6 +8,13 @@ public class GameManager : Singleton<GameManager>
     public string PlayerId { get; private set; }
     public string Nickname { get; private set; }
     public string RoomId { get; private set; }
+    public string HostId { get; private set; }
+    public string HostNickname { get; private set; }
+    public IReadOnlyList<string> RoomPlayers => _roomPlayers;
+
+    public static event Action RoomInfoChanged;
+
+    private readonly List<string> _roomPlayers = new List<string>();
 
     private void Start()
     {
@@ -31,6 +40,42 @@ public class GameManager : Singleton<GameManager>
     {
         RoomId = roomId;
         Debug.Log($"[GameManager] Da join room: {RoomId}");
+        RoomInfoChanged?.Invoke();
+    }
+
+    public void SetRoomHostInfo(string hostId, string hostNickname)
+    {
+        HostId = hostId;
+        HostNickname = hostNickname;
+        RoomInfoChanged?.Invoke();
+    }
+
+    public void SetRoomPlayers(List<string> players)
+    {
+        _roomPlayers.Clear();
+
+        if (players != null)
+        {
+            for (int i = 0; i < players.Count; i++)
+            {
+                if (!string.IsNullOrEmpty(players[i]))
+                {
+                    _roomPlayers.Add(players[i]);
+                }
+            }
+        }
+
+        RoomInfoChanged?.Invoke();
+    }
+
+    public void ClearRoomId()
+    {
+        RoomId = string.Empty;
+        HostId = string.Empty;
+        HostNickname = string.Empty;
+        _roomPlayers.Clear();
+        Debug.Log("[GameManager] Da roi room");
+        RoomInfoChanged?.Invoke();
     }
 
     // Ham xoa thong tin khi dang xuat
@@ -39,8 +84,12 @@ public class GameManager : Singleton<GameManager>
         PlayerId = string.Empty;
         Nickname = string.Empty;
         RoomId = string.Empty;
+        HostId = string.Empty;
+        HostNickname = string.Empty;
+        _roomPlayers.Clear();
 
         Debug.Log("[GameManager] Da xoa thong tin nguoi choi");
+        RoomInfoChanged?.Invoke();
     }
 
     // Kiem tra da dang nhap chua

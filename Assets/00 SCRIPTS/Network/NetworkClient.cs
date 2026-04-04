@@ -9,7 +9,7 @@ using UnityEngine;
 public class NetworkClient : Singleton<NetworkClient>
 {
     [Header("Cau hinh server")]
-    [SerializeField] private string serverHost = "192.168.1.55";
+    [SerializeField] private string serverHost = "192.168.1.5";
     [SerializeField] private int serverPort = 5555;
 
     private TcpClient _client;
@@ -76,6 +76,28 @@ public class NetworkClient : Singleton<NetworkClient>
             else
             {
                 Debug.Log("[NetworkClient] Da tim thay LobbyMessageHandler trong scene");
+            }
+        }
+
+        // Tim hoac tao RoomMessageHandler
+        var roomHandler = FindObjectOfType<RoomMessageHandler>();
+        if (roomHandler == null)
+        {
+            var handlerObj = new GameObject("RoomMessageHandler");
+            handlerObj.transform.SetParent(transform);
+            roomHandler = handlerObj.AddComponent<RoomMessageHandler>();
+            Debug.Log("[NetworkClient] Da tu dong tao RoomMessageHandler");
+        }
+        else
+        {
+            if (roomHandler.transform.parent != transform)
+            {
+                roomHandler.transform.SetParent(transform);
+                Debug.Log("[NetworkClient] Da di chuyen RoomMessageHandler vao DontDestroyOnLoad");
+            }
+            else
+            {
+                Debug.Log("[NetworkClient] Da tim thay RoomMessageHandler trong scene");
             }
         }
     }
