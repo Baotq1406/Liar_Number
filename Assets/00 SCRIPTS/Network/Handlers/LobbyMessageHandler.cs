@@ -15,7 +15,7 @@ public class LobbyJoinedPayload
 {
     public string playerId;
     public string nickname;
-    // BO roomId - user moi dang nhap chua co room
+    public int avatarId;
 }
 
 public class LobbyMessageHandler : MonoBehaviour
@@ -82,13 +82,25 @@ public class LobbyMessageHandler : MonoBehaviour
         try
         {
             var payload = JsonUtility.FromJson<LobbyJoinedPayload>(payloadJson);
+            if (payload == null || string.IsNullOrEmpty(payload.playerId) || string.IsNullOrEmpty(payload.nickname))
+            {
+                Debug.LogError("[LobbyMessageHandler] Payload LobbyJoined khong hop le");
+                return;
+            }
+
+            if (payload.avatarId < 0)
+            {
+                Debug.LogWarning("[LobbyMessageHandler] avatarId am tu server, fallback ve 0. avatarId=" + payload.avatarId);
+                payload.avatarId = 0;
+            }
             
-            Debug.Log($"[LobbyMessageHandler] Parse thanh cong! PlayerId={payload.playerId}, Nickname={payload.nickname}");
+            Debug.Log($"[LobbyMessageHandler] Parse thanh cong! PlayerId={payload.playerId}, Nickname={payload.nickname}, AvatarId={payload.avatarId}");
 
             // Luu thong tin nguoi choi vao GameManager (CHUA CO roomId)
             if (GameManager.Instant != null)
             {
                 GameManager.Instant.SetPlayerInfo(payload.playerId, payload.nickname);
+                GameManager.Instant.SetSelectedAvatarId(payload.avatarId);
                 Debug.Log("[LobbyMessageHandler] Da luu thong tin vao GameManager");
             }
             else

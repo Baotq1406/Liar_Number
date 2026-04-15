@@ -8,6 +8,7 @@ public class CreateRoomRequest
 {
     public string playerId;
     public string nickname;
+    public int avatarId;
 }
 
 [Serializable]
@@ -16,6 +17,7 @@ public class RoomCreatedPayload
     public string roomId;
     public string hostId;
     public string hostNickname;
+    public int hostAvatarId;
 }
 
 [Serializable]
@@ -24,6 +26,7 @@ public class JoinRoomRequest
     public string roomId;
     public string playerId;
     public string nickname;
+    public int avatarId;
 }
 
 [Serializable]
@@ -32,6 +35,7 @@ public class RoomJoinedPayload
     public string roomId;
     public string hostId;
     public string hostNickname;
+    public int hostAvatarId;
 }
 
 [Serializable]
@@ -42,11 +46,34 @@ public class RoomPlayersUpdatedPayload
 }
 
 [Serializable]
+public class PlayerJoinedPayload
+{
+    public string roomId;
+    public string playerName;
+    public int avatarId;
+}
+
+[Serializable]
+public class RoomStatePayload
+{
+    public string roomId;
+    public List<RoomPlayerState> players;
+}
+
+[Serializable]
 public class RoomClosedPayload
 {
     public string roomId;
     public string reason;
     public string closedBy;
+}
+
+[Serializable]
+public class GameStartedPayload
+{
+    public string roomId;
+    public List<string> players;
+    public int initialCardCount;
 }
 
 public class RoomMessageHandler : MonoBehaviour
@@ -55,6 +82,7 @@ public class RoomMessageHandler : MonoBehaviour
 
     [Header("Cau hinh")]
     [SerializeField] private string roomSceneName = "RoomScene";
+    [SerializeField] private string gameSceneName = "GameScene";
     [SerializeField] private string mainMenuSceneName = "MainMenu";
     [SerializeField] private string fallbackMainMenuSceneName = "MainMenuScene";
 
@@ -91,10 +119,14 @@ public class RoomMessageHandler : MonoBehaviour
         NetworkClient.Instant.Dispatcher.RegisterHandler("RoomJoined", OnRoomJoined);
         NetworkClient.Instant.Dispatcher.RegisterHandler("JoinRoomFailed", OnJoinRoomFailed);
         NetworkClient.Instant.Dispatcher.RegisterHandler("RoomPlayersUpdated", OnRoomPlayersUpdated);
+        NetworkClient.Instant.Dispatcher.RegisterHandler("PlayerJoined", OnPlayerJoined);
+        NetworkClient.Instant.Dispatcher.RegisterHandler("RoomState", OnRoomState);
         NetworkClient.Instant.Dispatcher.RegisterHandler("CreateRoomFailed", OnCreateRoomFailed);
         NetworkClient.Instant.Dispatcher.RegisterHandler("RoomCreateFailed", OnCreateRoomFailed);
         NetworkClient.Instant.Dispatcher.RegisterHandler("RoomClosed", OnRoomClosed);
         NetworkClient.Instant.Dispatcher.RegisterHandler("CancelRoomFailed", OnCancelRoomFailed);
+        NetworkClient.Instant.Dispatcher.RegisterHandler("GameStarted", OnGameStarted);
+        NetworkClient.Instant.Dispatcher.RegisterHandler("StartGameFailed", OnStartGameFailed);
         _isRegistered = true;
 
         Debug.Log("[RoomMessageHandler] Da dang ky handler cho room message");
@@ -111,10 +143,14 @@ public class RoomMessageHandler : MonoBehaviour
         NetworkClient.Instant.Dispatcher.UnregisterHandler("RoomJoined", OnRoomJoined);
         NetworkClient.Instant.Dispatcher.UnregisterHandler("JoinRoomFailed", OnJoinRoomFailed);
         NetworkClient.Instant.Dispatcher.UnregisterHandler("RoomPlayersUpdated", OnRoomPlayersUpdated);
+        NetworkClient.Instant.Dispatcher.UnregisterHandler("PlayerJoined", OnPlayerJoined);
+        NetworkClient.Instant.Dispatcher.UnregisterHandler("RoomState", OnRoomState);
         NetworkClient.Instant.Dispatcher.UnregisterHandler("CreateRoomFailed", OnCreateRoomFailed);
         NetworkClient.Instant.Dispatcher.UnregisterHandler("RoomCreateFailed", OnCreateRoomFailed);
         NetworkClient.Instant.Dispatcher.UnregisterHandler("RoomClosed", OnRoomClosed);
         NetworkClient.Instant.Dispatcher.UnregisterHandler("CancelRoomFailed", OnCancelRoomFailed);
+        NetworkClient.Instant.Dispatcher.UnregisterHandler("GameStarted", OnGameStarted);
+        NetworkClient.Instant.Dispatcher.UnregisterHandler("StartGameFailed", OnStartGameFailed);
         _isRegistered = false;
     }
 
@@ -131,6 +167,12 @@ public class RoomMessageHandler : MonoBehaviour
                 return;
             }
 
+            if (payload.hostAvatarId < 0)
+            {
+                Debug.LogWarning("[RoomMessageHandler] hostAvatarId am trong RoomCreated, fallback ve 0. host=" + payload.hostNickname + ", avatarId=" + payload.hostAvatarId);
+                payload.hostAvatarId = 0;
+            }
+
             if (GameManager.Instant == null)
             {
                 Debug.LogError("[RoomMessageHandler] GameManager khong ton tai!");
@@ -139,6 +181,15 @@ public class RoomMessageHandler : MonoBehaviour
 
             GameManager.Instant.SetRoomId(payload.roomId);
             GameManager.Instant.SetRoomHostInfo(payload.hostId, payload.hostNickname);
+
+            if (!string.IsNullOrEmpty(payload.hostNickname))
+            {
+                GameManager.Instant.OnPlayerJoined(new RoomPlayerState
+                {
+                    playerName = payload.hostNickname,
+                    avatarId = Mathf.Max(0, payload.hostAvatarId)
+                });
+            }
 
             var players = new List<string>();
             if (!string.IsNullOrEmpty(payload.hostNickname))
@@ -152,6 +203,66 @@ public class RoomMessageHandler : MonoBehaviour
         catch (Exception e)
         {
             Debug.LogError("[RoomMessageHandler] Loi parse RoomCreated: " + e.Message);
+        }
+    }
+
+    private void OnPlayerJoined(string payloadJson)
+    {
+        Debug.Log("[RoomMessageHandler] Nhan PlayerJoined: " + payloadJson);
+
+        try
+        {
+            var payload = JsonUtility.FromJson<PlayerJoinedPayload>(payloadJson);
+            if (payload == null || string.IsNullOrEmpty(payload.playerName))
+            {
+                return;
+            }
+
+            if (payload.avatarId < 0)
+            {
+                Debug.LogWarning("[RoomMessageHandler] avatarId am trong PlayerJoined, fallback ve 0. Player=" + payload.playerName + ", avatarId=" + payload.avatarId);
+                payload.avatarId = 0;
+            }
+
+            if (GameManager.Instant != null)
+            {
+                GameManager.Instant.OnPlayerJoined(new RoomPlayerState
+                {
+                    playerName = payload.playerName,
+                    avatarId = payload.avatarId
+                });
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogError("[RoomMessageHandler] Loi parse PlayerJoined: " + e.Message);
+        }
+    }
+
+    private void OnRoomState(string payloadJson)
+    {
+        Debug.Log("[RoomMessageHandler] Nhan RoomState: " + payloadJson);
+
+        try
+        {
+            var payload = JsonUtility.FromJson<RoomStatePayload>(payloadJson);
+            if (payload == null)
+            {
+                return;
+            }
+
+            if (GameManager.Instant != null)
+            {
+                if (payload.players == null)
+                {
+                    Debug.LogWarning("[RoomMessageHandler] RoomState khong co danh sach players");
+                }
+                GameManager.Instant.OnRoomState(payload.players);
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogError("[RoomMessageHandler] Loi parse RoomState: " + e.Message);
         }
     }
 
@@ -173,6 +284,12 @@ public class RoomMessageHandler : MonoBehaviour
                 return;
             }
 
+            if (payload.hostAvatarId < 0)
+            {
+                Debug.LogWarning("[RoomMessageHandler] hostAvatarId am trong RoomJoined, fallback ve 0. host=" + payload.hostNickname + ", avatarId=" + payload.hostAvatarId);
+                payload.hostAvatarId = 0;
+            }
+
             if (GameManager.Instant == null)
             {
                 Debug.LogError("[RoomMessageHandler] GameManager khong ton tai!");
@@ -182,6 +299,15 @@ public class RoomMessageHandler : MonoBehaviour
             GameManager.Instant.SetRoomId(payload.roomId);
             GameManager.Instant.SetRoomHostInfo(payload.hostId, payload.hostNickname);
 
+            if (!string.IsNullOrEmpty(payload.hostNickname))
+            {
+                GameManager.Instant.OnPlayerJoined(new RoomPlayerState
+                {
+                    playerName = payload.hostNickname,
+                    avatarId = Mathf.Max(0, payload.hostAvatarId)
+                });
+            }
+
             var players = new List<string>();
             if (!string.IsNullOrEmpty(payload.hostNickname))
             {
@@ -189,7 +315,7 @@ public class RoomMessageHandler : MonoBehaviour
             }
 
             if (!string.IsNullOrEmpty(GameManager.Instant.Nickname) &&
-                (string.IsNullOrEmpty(payload.hostNickname) || !string.Equals(GameManager.Instant.Nickname, payload.hostNickname, StringComparison.Ordinal)))
+                (string.IsNullOrEmpty(payload.hostNickname) || !string.Equals(GameManager.Instant.Nickname, payload.hostNickname, StringComparison.OrdinalIgnoreCase)))
             {
                 players.Add(GameManager.Instant.Nickname);
             }
@@ -261,6 +387,51 @@ public class RoomMessageHandler : MonoBehaviour
     private void OnCancelRoomFailed(string payloadJson)
     {
         Debug.LogError("[RoomMessageHandler] Huy room that bai: " + payloadJson);
+    }
+
+    private void OnGameStarted(string payloadJson)
+    {
+        Debug.Log("[RoomMessageHandler] Nhan GameStarted: " + payloadJson);
+
+        try
+        {
+            var payload = JsonUtility.FromJson<GameStartedPayload>(payloadJson);
+            if (payload == null)
+            {
+                return;
+            }
+
+            if (GameManager.Instant != null)
+            {
+                if (payload.players != null && payload.players.Count > 0)
+                {
+                    GameManager.Instant.SetRoomPlayers(payload.players);
+                }
+
+                if (!GameManager.Instant.TryStartGame(payload.initialCardCount, out var errorMessage))
+                {
+                    Debug.LogWarning("[RoomMessageHandler] Khoi tao game state that bai: " + errorMessage);
+                }
+            }
+
+            if (!string.IsNullOrEmpty(gameSceneName) && Application.CanStreamedLevelBeLoaded(gameSceneName))
+            {
+                SceneManager.LoadScene(gameSceneName);
+            }
+            else
+            {
+                Debug.LogError("[RoomMessageHandler] Khong tim thay GameScene trong Build Settings: " + gameSceneName);
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogError("[RoomMessageHandler] Loi parse GameStarted: " + e.Message);
+        }
+    }
+
+    private void OnStartGameFailed(string payloadJson)
+    {
+        Debug.LogError("[RoomMessageHandler] Bat dau game that bai: " + payloadJson);
     }
 
     private void LoadMainMenuSceneSafely()

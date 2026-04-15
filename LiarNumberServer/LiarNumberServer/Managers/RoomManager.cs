@@ -8,7 +8,7 @@ namespace LiarNumberServer.Managers
         private readonly object _lock = new();
         private readonly Random _random = new();
 
-        public bool TryCreateRoom(string hostPlayerId, string hostNickname, out RoomInfo? room, out string errorCode, out string message)
+        public bool TryCreateRoom(string hostPlayerId, string hostNickname, int hostAvatarId, out RoomInfo? room, out string errorCode, out string message)
         {
             room = null;
             errorCode = string.Empty;
@@ -37,7 +37,8 @@ namespace LiarNumberServer.Managers
                     room.Players.Add(new RoomPlayerInfo
                     {
                         playerId = hostPlayerId,
-                        nickname = hostNickname
+                        nickname = hostNickname,
+                        avatarId = hostAvatarId
                     });
 
                     _rooms[roomId] = room;

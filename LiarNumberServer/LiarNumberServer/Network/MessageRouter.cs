@@ -17,9 +17,10 @@ namespace LiarNumberServer.Network
 
         public MessageRouter()
         {
+            const int avatarCount = 12;
             _handlers = new Dictionary<string, Action<string, ClientConnection>>();
-            _lobbyHandler = new LobbyHandler();
-            _roomHandler = new RoomHandler(new RoomManager());
+            _lobbyHandler = new LobbyHandler(avatarCount);
+            _roomHandler = new RoomHandler(new RoomManager(), avatarCount);
 
             // Dang ky cac handler cho tung loai message
             RegisterHandler("JoinLobby", _lobbyHandler.HandleJoinLobby);
@@ -27,6 +28,7 @@ namespace LiarNumberServer.Network
             RegisterHandler("JoinRoom", _roomHandler.HandleJoinRoom);
             RegisterHandler("LeaveRoom", _roomHandler.HandleLeaveRoom);
             RegisterHandler("CancelRoom", _roomHandler.HandleCancelRoom);
+            RegisterHandler("StartGame", _roomHandler.HandleStartGame);
             RegisterHandler("Ready", HandleReady);
             RegisterHandler("PlayCard", HandlePlayCard);
             RegisterHandler("CallLiar", HandleCallLiar);

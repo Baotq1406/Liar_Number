@@ -15,19 +15,29 @@ namespace LiarNumberServer.Handlers
         private readonly Dictionary<string, ClientConnection> _playerConnections = new(); // playerId -> connection
         private readonly Dictionary<string, HashSet<string>> _roomPlayers = new(); // roomId -> playerIds
         private readonly object _lock = new();
+        private readonly int _avatarCount;
 
-        public RoomHandler(RoomManager roomManager)
+        public RoomHandler(RoomManager roomManager, int avatarCount = 12)
         {
             _roomManager = roomManager;
+            _avatarCount = Math.Max(1, avatarCount);
         }
 
         public void HandleCreateRoom(string payloadJson, ClientConnection connection)
         {
             var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+            var connectionId = connection.ConnectionId;
 
             try
             {
-                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] BAT DAU XU LY CreateRoom");
+                LogRoomAction(timestamp, connectionId, connection.PlayerId, connection.CurrentRoomId, "CreateRoom", "BAT DAU XU LY");
+
+                if (string.IsNullOrWhiteSpace(payloadJson))
+                {
+                    SendCreateRoomFailed(connection, "INVALID_PAYLOAD", "CreateRoom payload is empty");
+                    LogRoomAction(timestamp, connectionId, connection.PlayerId, connection.CurrentRoomId, "CreateRoom", "THAT BAI: INVALID_PAYLOAD (empty payload)");
+                    return;
+                }
 
                 var request = JsonSerializer.Deserialize<CreateRoomRequest>(payloadJson);
                 if (request == null)
@@ -36,15 +46,35 @@ namespace LiarNumberServer.Handlers
                     return;
                 }
 
-                if (string.IsNullOrWhiteSpace(request.playerId) || string.IsNullOrWhiteSpace(request.nickname))
+                if (string.IsNullOrWhiteSpace(connection.PlayerId) || string.IsNullOrWhiteSpace(connection.Nickname))
                 {
-                    SendCreateRoomFailed(connection, "INVALID_REQUEST", "playerId and nickname are required");
+                    SendCreateRoomFailed(connection, "NOT_AUTHENTICATED", "JoinLobby is required before CreateRoom");
+                    Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] THAT BAI CreateRoom: NOT_AUTHENTICATED");
+                    return;
+                }
+
+                var playerId = connection.PlayerId.Trim();
+                var nickname = connection.Nickname.Trim();
+                var serverAvatarId = ClampAvatar(connection.AvatarId);
+                var avatarId = ResolveAvatarForRoom(playerId, request.avatarId, serverAvatarId, timestamp, connectionId, "CreateRoom", roomId: "-");
+
+                if (!string.IsNullOrWhiteSpace(request.playerId) && !string.Equals(request.playerId.Trim(), playerId, StringComparison.Ordinal))
+                {
+                    SendCreateRoomFailed(connection, "INVALID_REQUEST", "playerId does not match authenticated player");
+                    Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] THAT BAI CreateRoom: spoofed playerId req={request.playerId}, auth={playerId}");
+                    return;
+                }
+
+                if (!string.IsNullOrWhiteSpace(request.nickname) && !string.Equals(request.nickname.Trim(), nickname, StringComparison.Ordinal))
+                {
+                    SendCreateRoomFailed(connection, "INVALID_REQUEST", "nickname does not match authenticated player");
+                    Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] THAT BAI CreateRoom: spoofed nickname req={request.nickname}, auth={nickname}");
                     return;
                 }
 
                 lock (_lock)
                 {
-                    if (_playerRoomMap.ContainsKey(request.playerId) ||
+                    if (_playerRoomMap.ContainsKey(playerId) ||
                         _connectionRoomMap.ContainsKey(connection.ConnectionId) ||
                         !string.IsNullOrEmpty(connection.CurrentRoomId))
                     {
@@ -54,22 +84,21 @@ namespace LiarNumberServer.Handlers
                     }
                 }
 
-                if (!_roomManager.TryCreateRoom(request.playerId, request.nickname, out var room, out var errorCode, out var message) || room == null)
+                if (!_roomManager.TryCreateRoom(playerId, nickname, avatarId, out var room, out var errorCode, out var message) || room == null)
                 {
                     SendCreateRoomFailed(connection, errorCode, message);
-                    Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] THAT BAI CreateRoom: playerId={request.playerId}, errorCode={errorCode}, message={message}");
+                    Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] THAT BAI CreateRoom: playerId={playerId}, errorCode={errorCode}, message={message}");
                     return;
                 }
 
-                connection.PlayerId = request.playerId;
-                connection.Nickname = request.nickname;
+                connection.AvatarId = avatarId;
                 connection.CurrentRoomId = room.RoomId;
 
                 lock (_lock)
                 {
                     _connectionRoomMap[connection.ConnectionId] = room.RoomId;
-                    _playerRoomMap[request.playerId] = room.RoomId;
-                    _playerConnections[request.playerId] = connection;
+                    _playerRoomMap[playerId] = room.RoomId;
+                    _playerConnections[playerId] = connection;
 
                     if (!_roomPlayers.TryGetValue(room.RoomId, out var players))
                     {
@@ -77,23 +106,31 @@ namespace LiarNumberServer.Handlers
                         _roomPlayers[room.RoomId] = players;
                     }
 
-                    players.Add(request.playerId);
+                    players.Add(playerId);
                 }
 
                 var response = new RoomCreatedEvent
                 {
                     roomId = room.RoomId,
                     hostId = room.HostPlayerId,
-                    hostNickname = room.HostNickname
+                    hostNickname = room.HostNickname,
+                    hostAvatarId = GetRoomPlayerAvatar(room, room.HostPlayerId)
                 };
 
                 connection.SendMessage("RoomCreated", response);
-                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] CreateRoom THANH CONG: playerId={room.HostPlayerId}, roomId={room.RoomId}");
+                BroadcastRoomState(room.RoomId);
+                BroadcastRoomPlayersUpdated(room.RoomId);
+                LogRoomAction(timestamp, connectionId, room.HostPlayerId, room.RoomId, "CreateRoom", "THANH CONG");
+            }
+            catch (JsonException e)
+            {
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connectionId}] EXCEPTION CreateRoom JSON: {e.Message}");
+                SendCreateRoomFailed(connection, "INVALID_PAYLOAD", "Invalid CreateRoom payload");
             }
             catch (Exception e)
             {
-                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] EXCEPTION CreateRoom: {e.Message}");
-                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] Stack: {e.StackTrace}");
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connectionId}] EXCEPTION CreateRoom: {e.Message}");
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connectionId}] Stack: {e.StackTrace}");
                 SendCreateRoomFailed(connection, "INTERNAL_ERROR", "Internal server error");
             }
         }
@@ -101,26 +138,57 @@ namespace LiarNumberServer.Handlers
         public void HandleJoinRoom(string payloadJson, ClientConnection connection)
         {
             var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+            var connectionId = connection.ConnectionId;
 
             try
             {
-                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] BAT DAU XU LY JoinRoom");
+                LogRoomAction(timestamp, connectionId, connection.PlayerId, connection.CurrentRoomId, "JoinRoom", "BAT DAU XU LY");
+
+                if (string.IsNullOrWhiteSpace(payloadJson))
+                {
+                    SendJoinRoomFailed(connection, "INVALID_PAYLOAD", "JoinRoom payload is empty");
+                    LogRoomAction(timestamp, connectionId, connection.PlayerId, connection.CurrentRoomId, "JoinRoom", "THAT BAI: INVALID_PAYLOAD (empty payload)");
+                    return;
+                }
 
                 var request = JsonSerializer.Deserialize<JoinRoomRequest>(payloadJson);
                 if (request == null)
                 {
-                    SendJoinRoomFailed(connection, "INVALID_REQUEST", "Invalid JoinRoom payload");
+                    SendJoinRoomFailed(connection, "INVALID_PAYLOAD", "Invalid JoinRoom payload");
                     return;
                 }
 
                 var roomId = (request.roomId ?? string.Empty).Trim().ToUpperInvariant();
-                var playerId = (request.playerId ?? string.Empty).Trim();
-                var nickname = (request.nickname ?? string.Empty).Trim();
-
-                if (string.IsNullOrWhiteSpace(roomId) || string.IsNullOrWhiteSpace(playerId) || string.IsNullOrWhiteSpace(nickname))
+                if (string.IsNullOrWhiteSpace(connection.PlayerId) || string.IsNullOrWhiteSpace(connection.Nickname))
                 {
-                    SendJoinRoomFailed(connection, "INVALID_REQUEST", "roomId, playerId, nickname are required");
+                    SendJoinRoomFailed(connection, "NOT_AUTHENTICATED", "JoinLobby is required before JoinRoom");
+                    Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] THAT BAI JoinRoom: NOT_AUTHENTICATED");
+                    return;
+                }
+
+                var playerId = connection.PlayerId.Trim();
+                var nickname = connection.Nickname.Trim();
+                var serverAvatarId = ClampAvatar(connection.AvatarId);
+                var avatarId = ResolveAvatarForRoom(playerId, request.avatarId, serverAvatarId, timestamp, connectionId, "JoinRoom", roomId);
+
+                if (string.IsNullOrWhiteSpace(roomId))
+                {
+                    SendJoinRoomFailed(connection, "INVALID_REQUEST", "roomId is required");
                     Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] THAT BAI JoinRoom: invalid input");
+                    return;
+                }
+
+                if (!string.IsNullOrWhiteSpace(request.playerId) && !string.Equals(request.playerId.Trim(), playerId, StringComparison.Ordinal))
+                {
+                    SendJoinRoomFailed(connection, "INVALID_REQUEST", "playerId does not match authenticated player");
+                    Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] THAT BAI JoinRoom: spoofed playerId req={request.playerId}, auth={playerId}");
+                    return;
+                }
+
+                if (!string.IsNullOrWhiteSpace(request.nickname) && !string.Equals(request.nickname.Trim(), nickname, StringComparison.Ordinal))
+                {
+                    SendJoinRoomFailed(connection, "INVALID_REQUEST", "nickname does not match authenticated player");
+                    Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] THAT BAI JoinRoom: spoofed nickname req={request.nickname}, auth={nickname}");
                     return;
                 }
 
@@ -139,7 +207,8 @@ namespace LiarNumberServer.Handlers
                 var joinPlayer = new RoomPlayerInfo
                 {
                     playerId = playerId,
-                    nickname = nickname
+                    nickname = nickname,
+                    avatarId = avatarId
                 };
 
                 if (!_roomManager.TryJoinRoom(roomId, joinPlayer, out var errorCode, out var errorMessage, out var room) || room == null)
@@ -149,8 +218,7 @@ namespace LiarNumberServer.Handlers
                     return;
                 }
 
-                connection.PlayerId = playerId;
-                connection.Nickname = nickname;
+                connection.AvatarId = avatarId;
                 connection.CurrentRoomId = roomId;
 
                 lock (_lock)
@@ -176,19 +244,27 @@ namespace LiarNumberServer.Handlers
                 {
                     roomId = room.RoomId,
                     hostId = room.HostPlayerId,
-                    hostNickname = room.HostNickname
+                    hostNickname = room.HostNickname,
+                    hostAvatarId = GetRoomPlayerAvatar(room, room.HostPlayerId)
                 };
 
                 connection.SendMessage("RoomJoined", roomJoined);
+                BroadcastPlayerJoined(roomId, nickname, avatarId);
+                BroadcastRoomState(roomId);
                 BroadcastRoomPlayersUpdated(roomId);
 
-                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] JoinRoom THANH CONG: roomId={roomId}, playerId={playerId}, roomSize={room.Players.Count}/{room.MaxPlayers}");
+                LogRoomAction(timestamp, connectionId, playerId, roomId, "JoinRoom", $"THANH CONG: avatarId={avatarId}, roomSize={room.Players.Count}/{room.MaxPlayers}");
+            }
+            catch (JsonException e)
+            {
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connectionId}] EXCEPTION JoinRoom JSON: {e.Message}");
+                SendJoinRoomFailed(connection, "INVALID_PAYLOAD", "Invalid JoinRoom payload");
             }
             catch (Exception e)
             {
-                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] EXCEPTION JoinRoom: {e.Message}");
-                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] Stack: {e.StackTrace}");
-                SendJoinRoomFailed(connection, "INVALID_REQUEST", "Invalid JoinRoom request");
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connectionId}] EXCEPTION JoinRoom: {e.Message}");
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connectionId}] Stack: {e.StackTrace}");
+                SendJoinRoomFailed(connection, "INTERNAL_ERROR", "Internal server error");
             }
         }
 
@@ -247,6 +323,7 @@ namespace LiarNumberServer.Handlers
                 }
 
                 CleanupPlayerRoomMapping(playerId, roomId, connection);
+                BroadcastRoomState(roomId);
                 BroadcastRoomPlayersUpdated(roomId);
 
                 Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] LeaveRoom THANH CONG: roomId={roomId}, playerId={playerId}");
@@ -255,6 +332,89 @@ namespace LiarNumberServer.Handlers
             {
                 Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] EXCEPTION LeaveRoom: {e.Message}");
                 Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] Stack: {e.StackTrace}");
+            }
+        }
+
+        public void HandleStartGame(string payloadJson, ClientConnection connection)
+        {
+            var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+
+            try
+            {
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] BAT DAU XU LY StartGame");
+
+                var request = JsonSerializer.Deserialize<StartGameRequest>(payloadJson);
+                if (request == null)
+                {
+                    SendStartGameFailed(connection, "INVALID_PAYLOAD", "Invalid StartGame payload");
+                    return;
+                }
+
+                var roomId = (request.roomId ?? string.Empty).Trim().ToUpperInvariant();
+                var playerId = (request.playerId ?? string.Empty).Trim();
+
+                if (string.IsNullOrWhiteSpace(roomId) || string.IsNullOrWhiteSpace(playerId))
+                {
+                    SendStartGameFailed(connection, "INVALID_REQUEST", "roomId and playerId are required");
+                    return;
+                }
+
+                if (!_roomManager.TryGetRoom(roomId, out var room) || room == null)
+                {
+                    SendStartGameFailed(connection, "ROOM_NOT_FOUND", "Room not found");
+                    return;
+                }
+
+                if (!string.Equals(room.HostPlayerId, playerId, StringComparison.Ordinal))
+                {
+                    SendStartGameFailed(connection, "NOT_HOST", "Only host can start game");
+                    return;
+                }
+
+                if (room.IsGameStarted)
+                {
+                    SendStartGameFailed(connection, "GAME_ALREADY_STARTED", "Game already started");
+                    return;
+                }
+
+                var players = room.Players
+                    .Select(p => p.nickname)
+                    .Where(n => !string.IsNullOrWhiteSpace(n))
+                    .ToList();
+
+                if (players.Count < 2 || players.Count > 4)
+                {
+                    SendStartGameFailed(connection, "INVALID_PLAYER_COUNT", "Player count must be between 2 and 4");
+                    return;
+                }
+
+                room.IsGameStarted = true;
+
+                var gameStarted = new GameStartedEvent
+                {
+                    roomId = roomId,
+                    players = players,
+                    initialCardCount = Math.Max(0, request.initialCardCount)
+                };
+
+                List<ClientConnection> targets;
+                lock (_lock)
+                {
+                    targets = GetRoomConnectionsSnapshotUnsafe(roomId);
+                }
+
+                foreach (var target in targets)
+                {
+                    target.SendMessage("GameStarted", gameStarted);
+                }
+
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] StartGame THANH CONG: roomId={roomId}, players={players.Count}, initialCardCount={gameStarted.initialCardCount}");
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] EXCEPTION StartGame: {e.Message}");
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] Stack: {e.StackTrace}");
+                SendStartGameFailed(connection, "INTERNAL_ERROR", "Internal server error");
             }
         }
 
@@ -353,6 +513,7 @@ namespace LiarNumberServer.Handlers
             if (_roomManager.TryLeaveRoom(roomId, playerId, out _, out _, out _))
             {
                 CleanupPlayerRoomMapping(playerId, roomId, connection);
+                BroadcastRoomState(roomId);
                 BroadcastRoomPlayersUpdated(roomId);
             }
         }
@@ -452,6 +613,120 @@ namespace LiarNumberServer.Handlers
             connection.CurrentRoomId = null;
         }
 
+        private int ClampAvatar(int avatarId)
+        {
+            if (avatarId < 0 || avatarId >= _avatarCount)
+            {
+                return 0;
+            }
+
+            return avatarId;
+        }
+
+        private int GetRoomPlayerAvatar(RoomInfo room, string playerId)
+        {
+            if (room == null || string.IsNullOrWhiteSpace(playerId))
+            {
+                return 0;
+            }
+
+            var player = room.Players.FirstOrDefault(p => string.Equals(p.playerId, playerId, StringComparison.Ordinal));
+            if (player == null)
+            {
+                return 0;
+            }
+
+            return ClampAvatar(player.avatarId);
+        }
+
+        private int ResolveAvatarForRoom(string playerId, int? requestedAvatarId, int serverAvatarId, string timestamp, string connectionId, string actionName, string roomId)
+        {
+            var authoritativeAvatarId = ClampAvatar(serverAvatarId);
+
+            if (!requestedAvatarId.HasValue)
+            {
+                LogRoomAction(timestamp, connectionId, playerId, roomId, actionName, $"avatar source=server, clientAvatar=(none), authoritativeAvatar={authoritativeAvatarId}");
+                return authoritativeAvatarId;
+            }
+
+            var requested = requestedAvatarId.Value;
+            var clampedRequested = ClampAvatar(requested);
+
+            if (requested != clampedRequested)
+            {
+                LogRoomAction(timestamp, connectionId, playerId, roomId, actionName, $"AVATAR_SPOOF_DETECTED: clientAvatar={requested} out-of-range -> authoritativeAvatar={authoritativeAvatarId}");
+                return authoritativeAvatarId;
+            }
+
+            if (requested != authoritativeAvatarId)
+            {
+                LogRoomAction(timestamp, connectionId, playerId, roomId, actionName, $"AVATAR_MISMATCH: clientAvatar={requested}, authoritativeAvatar={authoritativeAvatarId} -> use authoritativeAvatar");
+                return authoritativeAvatarId;
+            }
+
+            LogRoomAction(timestamp, connectionId, playerId, roomId, actionName, $"avatar validated={authoritativeAvatarId}");
+            return authoritativeAvatarId;
+        }
+
+        private void LogRoomAction(string timestamp, string connectionId, string? playerId, string? roomId, string actionName, string message)
+        {
+            Console.WriteLine($"[{timestamp}] [RoomHandler] [{connectionId}] action={actionName}, playerId={playerId ?? "-"}, roomId={roomId ?? "-"}, {message}");
+        }
+
+        private void BroadcastPlayerJoined(string roomId, string playerName, int avatarId)
+        {
+            var payload = new PlayerJoinedEvent
+            {
+                roomId = roomId,
+                playerName = playerName,
+                avatarId = ClampAvatar(avatarId)
+            };
+
+            List<ClientConnection> targets;
+            lock (_lock)
+            {
+                targets = GetRoomConnectionsSnapshotUnsafe(roomId);
+            }
+
+            Console.WriteLine($"[RoomHandler] Broadcast PlayerJoined: roomId={roomId}, playerName={playerName}, avatarId={payload.avatarId}, targets={targets.Count}");
+            foreach (var target in targets)
+            {
+                target.SendMessage("PlayerJoined", payload);
+            }
+        }
+
+        private void BroadcastRoomState(string roomId)
+        {
+            if (!_roomManager.TryGetRoom(roomId, out var room) || room == null)
+            {
+                return;
+            }
+
+            var payload = new RoomStateEvent
+            {
+                roomId = roomId,
+                players = room.Players
+                    .Select(p => new RoomStatePlayerInfo
+                    {
+                        playerName = p.nickname,
+                        avatarId = ClampAvatar(p.avatarId)
+                    })
+                    .ToList()
+            };
+
+            List<ClientConnection> targets;
+            lock (_lock)
+            {
+                targets = GetRoomConnectionsSnapshotUnsafe(roomId);
+            }
+
+            Console.WriteLine($"[RoomHandler] Broadcast RoomState: roomId={roomId}, players={payload.players.Count}, targets={targets.Count}");
+            foreach (var target in targets)
+            {
+                target.SendMessage("RoomState", payload);
+            }
+        }
+
         private void SendCreateRoomFailed(ClientConnection connection, string errorCode, string message)
         {
             var response = new CreateRoomFailedEvent
@@ -483,6 +758,17 @@ namespace LiarNumberServer.Handlers
             };
 
             connection.SendMessage("JoinRoomFailed", response);
+        }
+
+        private void SendStartGameFailed(ClientConnection connection, string errorCode, string message)
+        {
+            var response = new StartGameFailedEvent
+            {
+                errorCode = errorCode,
+                message = message
+            };
+
+            connection.SendMessage("StartGameFailed", response);
         }
 
         private void BroadcastRoomPlayersUpdated(string roomId)
