@@ -8,6 +8,9 @@ namespace LiarNumberServer.Messages.ServerToClient
         
         // Ten hien thi (echo lai tu request)
         public string nickname { get; set; } = string.Empty;
+
+        // Avatar duoc server cap (server authority)
+        public int avatarId { get; set; }
         
         // ID phong ma nguoi choi dang o (null neu chua vao phong nao)
         public string? roomId { get; set; } = null;

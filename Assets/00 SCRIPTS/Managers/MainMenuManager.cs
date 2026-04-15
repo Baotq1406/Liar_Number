@@ -11,10 +11,13 @@ public class MainMenuManager : MonoBehaviour
     [SerializeField] private TMP_InputField joinRoomCodeInput;
     [SerializeField] private Button joinRoomButton;
     [SerializeField] private TMP_Text joinStatusText;
+    [SerializeField] private Image playerAvatarImage;
+    [SerializeField] private string avatarResourcesPath = "Avatars";
     [SerializeField] private bool autoConnectIfNeeded = true;
     [SerializeField] private float joinRoomTimeoutSeconds = 8f;
 
     private bool _isJoiningRoom;
+    private Sprite[] _avatars;
 
     private void Awake()
     {
@@ -27,6 +30,12 @@ public class MainMenuManager : MonoBehaviour
 
     private void Start()
     {
+        _avatars = Resources.LoadAll<Sprite>(avatarResourcesPath);
+        if (_avatars == null || _avatars.Length == 0)
+        {
+            Debug.LogWarning("[MainMenuManager] Khong load duoc avatar tu Resources/" + avatarResourcesPath);
+        }
+
         // Hien thi ten nguoi choi tu GameManager
         if (JoinPanel != null)
         {
@@ -39,8 +48,32 @@ public class MainMenuManager : MonoBehaviour
         }
 
         DisplayPlayerName();
+        DisplayPlayerAvatar();
         
         Debug.Log("[MainMenuManager] Main Menu da san sang");
+    }
+
+    private void DisplayPlayerAvatar()
+    {
+        if (playerAvatarImage == null || GameManager.Instant == null)
+        {
+            return;
+        }
+
+        if (_avatars == null || _avatars.Length == 0)
+        {
+            playerAvatarImage.sprite = null;
+            return;
+        }
+
+        var avatarId = GameManager.Instant.SelectedAvatarId;
+        if (avatarId < 0 || avatarId >= _avatars.Length)
+        {
+            Debug.LogWarning("[MainMenuManager] avatarId local ngoai range, fallback ve 0. avatarId=" + avatarId + ", so avatar=" + _avatars.Length);
+            avatarId = 0;
+        }
+
+        playerAvatarImage.sprite = _avatars[avatarId];
     }
 
     private void OnEnable()
@@ -173,7 +206,8 @@ public class MainMenuManager : MonoBehaviour
         var payload = new CreateRoomRequest
         {
             playerId = GameManager.Instant.PlayerId,
-            nickname = GameManager.Instant.Nickname
+            nickname = GameManager.Instant.Nickname,
+            avatarId = GameManager.Instant.SelectedAvatarId
         };
 
         NetworkClient.Instant.SendNetworkMessage("CreateRoom", payload);
@@ -228,7 +262,8 @@ public class MainMenuManager : MonoBehaviour
         {
             roomId = roomCode,
             playerId = GameManager.Instant.PlayerId,
-            nickname = GameManager.Instant.Nickname
+            nickname = GameManager.Instant.Nickname,
+            avatarId = GameManager.Instant.SelectedAvatarId
         };
 
         _isJoiningRoom = true;

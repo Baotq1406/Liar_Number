@@ -10,6 +10,13 @@ namespace LiarNumberServer.Handlers
         // Map luu nickname -> playerId de tranh trung lap
         private readonly Dictionary<string, string> _activePlayers = new(); // nickname -> playerId
         private readonly object _lock = new();
+        private readonly Random _random = new();
+        private readonly int _avatarCount;
+
+        public LobbyHandler(int avatarCount = 12)
+        {
+            _avatarCount = Math.Max(1, avatarCount);
+        }
 
         // Xu ly message JoinLobby tu client
         public void HandleJoinLobby(string payloadJson, ClientConnection connection)
@@ -56,13 +63,17 @@ namespace LiarNumberServer.Handlers
                     // Tao playerId moi (dung Guid, lay 8 ky tu dau)
                     var playerId = Guid.NewGuid().ToString().Substring(0, 8);
                     
+                    var avatarId = _random.Next(0, _avatarCount);
+
                     // Luu thong tin vao map va connection
                     _activePlayers[request.nickname] = playerId;
                     connection.PlayerId = playerId;
                     connection.Nickname = request.nickname;
+                    connection.AvatarId = avatarId;
 
                     Console.WriteLine($"[{timestamp}] [Handler] [{connection.ConnectionId}] Tao PlayerId: {playerId}");
                     Console.WriteLine($"[{timestamp}] [Handler] [{connection.ConnectionId}] Gan Nickname: {request.nickname}");
+                    Console.WriteLine($"[{timestamp}] [Handler] [{connection.ConnectionId}] Random avatarId: {avatarId} (range 0..{_avatarCount - 1})");
                     Console.WriteLine($"[{timestamp}] [Handler] [{connection.ConnectionId}] Tong nguoi choi: {_activePlayers.Count}");
                 }
 
@@ -71,12 +82,13 @@ namespace LiarNumberServer.Handlers
                 {
                     playerId = connection.PlayerId,
                     nickname = connection.Nickname,
+                    avatarId = connection.AvatarId,
                     roomId = null // Player chua vao room nao, se co sau khi CreateRoom hoac JoinRoom
                 };
 
                 // Log ket qua thanh cong
                 Console.WriteLine($"[{timestamp}] [Handler] [{connection.ConnectionId}] JoinLobby THANH CONG");
-                Console.WriteLine($"[{timestamp}] [Handler] [{connection.ConnectionId}] Response: playerId={response.playerId}, nickname={response.nickname}, roomId={response.roomId ?? "null"}");
+                Console.WriteLine($"[{timestamp}] [Handler] [{connection.ConnectionId}] Response: playerId={response.playerId}, nickname={response.nickname}, avatarId={response.avatarId}, roomId={response.roomId ?? "null"}");
                 Console.WriteLine($"[{timestamp}] [Handler] [{connection.ConnectionId}] ========================================");
                 
                 // Gui response ve client
