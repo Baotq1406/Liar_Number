@@ -8,6 +8,9 @@ public class CardInteraction : MonoBehaviour
 {
     public static event Action<CardInteraction, bool> SelectionChanged;
 
+    // khoa tuong tac card theo trang thai UI overlay
+    public static bool IsGlobalInteractionLocked { get; private set; }
+
     private Vector3 originalPos;
     private Vector3 originalUp;
 
@@ -23,6 +26,11 @@ public class CardInteraction : MonoBehaviour
 
     private Tween moveTween;
 
+    public static void SetGlobalInteractionLocked(bool isLocked)
+    {
+        IsGlobalInteractionLocked = isLocked;
+    }
+
     void Start()
     {
         originalPos = transform.position;
@@ -34,6 +42,11 @@ public class CardInteraction : MonoBehaviour
 
     void OnMouseEnter()
     {
+        if (IsGlobalInteractionLocked)
+        {
+            return;
+        }
+
         isHovered = true;
 
         if (!isSelected)
@@ -42,6 +55,11 @@ public class CardInteraction : MonoBehaviour
 
     void OnMouseExit()
     {
+        if (IsGlobalInteractionLocked)
+        {
+            return;
+        }
+
         isHovered = false;
 
         if (!isSelected)
@@ -50,6 +68,11 @@ public class CardInteraction : MonoBehaviour
 
     void OnMouseDown()
     {
+        if (IsGlobalInteractionLocked)
+        {
+            return;
+        }
+
         if (Input.GetMouseButtonDown(0))
         {
             ToggleSelect();
@@ -63,6 +86,11 @@ public class CardInteraction : MonoBehaviour
 
     public void SetSelected(bool selected)
     {
+        if (IsGlobalInteractionLocked && selected)
+        {
+            return;
+        }
+
         if (isSelected == selected)
         {
             return;

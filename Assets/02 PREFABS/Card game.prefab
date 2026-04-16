@@ -70,8 +70,8 @@ SpriteRenderer:
   m_AutoUVMaxDistance: 0.5
   m_AutoUVMaxAngle: 89
   m_LightmapParameters: {fileID: 0}
-  m_SortingLayerID: 0
-  m_SortingLayer: 0
+  m_SortingLayerID: 1902545735
+  m_SortingLayer: 1
   m_SortingOrder: -1
   m_Sprite: {fileID: 21300000, guid: 9013a99455c636c409ac93ff5ecd98cb, type: 3}
   m_Color: {r: 1, g: 0, b: 0, a: 1}
@@ -96,6 +96,7 @@ GameObject:
   - component: {fileID: 1321053549805647875}
   - component: {fileID: 719049945051520713}
   - component: {fileID: 2758589443889760742}
+  - component: {fileID: 5211313638788341771}
   m_Layer: 0
   m_Name: Card game
   m_TagString: Untagged
@@ -157,8 +158,8 @@ SpriteRenderer:
   m_AutoUVMaxDistance: 0.5
   m_AutoUVMaxAngle: 89
   m_LightmapParameters: {fileID: 0}
-  m_SortingLayerID: 0
-  m_SortingLayer: 0
+  m_SortingLayerID: 1902545735
+  m_SortingLayer: 1
   m_SortingOrder: 0
   m_Sprite: {fileID: 21300000, guid: 21c24ef32c02c7d42a4dc41194cc3e42, type: 3}
   m_Color: {r: 1, g: 1, b: 1, a: 1}
@@ -231,3 +232,22 @@ MonoBehaviour:
   hoverOffset: 0.5
   duration: 0.2
   border: {fileID: 1470077562245783615}
+--- !u!114 &5211313638788341771
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5913405964039656673}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 073a0a06eee95794f900e1209869567d, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  valueSprites:
+  - {fileID: 21300000, guid: 64d1aeab2e6cdff4eb693d0147dcb8dd, type: 3}
+  - {fileID: 21300000, guid: 2e7b260955fe0ca428e0760c4328e314, type: 3}
+  - {fileID: 21300000, guid: dc11831cd6ee02c4d81d20471b18826f, type: 3}
+  - {fileID: 21300000, guid: 7ad41c19a4d2d7e4abd2cec538d0d3da, type: 3}
+  targetSpriteRenderer: {fileID: 1321053549805647875}
+  targetImage: {fileID: 0}

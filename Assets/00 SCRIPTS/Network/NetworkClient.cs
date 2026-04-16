@@ -100,6 +100,28 @@ public class NetworkClient : Singleton<NetworkClient>
                 Debug.Log("[NetworkClient] Da tim thay RoomMessageHandler trong scene");
             }
         }
+
+        // Tim hoac tao GameMessageHandler
+        var gameHandler = FindObjectOfType<GameMessageHandler>();
+        if (gameHandler == null)
+        {
+            var handlerObj = new GameObject("GameMessageHandler");
+            handlerObj.transform.SetParent(transform);
+            gameHandler = handlerObj.AddComponent<GameMessageHandler>();
+            Debug.Log("[NetworkClient] Da tu dong tao GameMessageHandler");
+        }
+        else
+        {
+            if (gameHandler.transform.parent != transform)
+            {
+                gameHandler.transform.SetParent(transform);
+                Debug.Log("[NetworkClient] Da di chuyen GameMessageHandler vao DontDestroyOnLoad");
+            }
+            else
+            {
+                Debug.Log("[NetworkClient] Da tim thay GameMessageHandler trong scene");
+            }
+        }
     }
 
     private void OnDestroy()
@@ -279,5 +301,117 @@ public class NetworkClient : Singleton<NetworkClient>
 
         var json = JsonUtility.ToJson(wrapper);
         SendRaw(json);
+    }
+
+    public bool SendPlayCard(string roomId, string playerId, List<int> cards, int declaredNumber)
+    {
+        if (!ValidateCommonActionRequest(roomId, playerId))
+        {
+            return false;
+        }
+
+        if (cards == null || cards.Count == 0)
+        {
+            Debug.LogWarning("[NetworkClient] PLAY_CARD that bai: cards rong");
+            return false;
+        }
+
+        var normalizedCards = new List<int>(cards.Count);
+        for (int i = 0; i < cards.Count; i++)
+        {
+            normalizedCards.Add(GameManager.NormalizeCardValue(cards[i]));
+        }
+
+        var payload = new PlayCardRequest
+        {
+            roomId = roomId,
+            playerId = playerId,
+            cards = normalizedCards,
+            declaredNumber = GameManager.NormalizeCardValue(declaredNumber)
+        };
+
+        SendNetworkMessage("PLAY_CARD", payload);
+        return true;
+    }
+
+    public bool SendPlayCard(List<int> cards, int declaredNumber)
+    {
+        if (GameManager.Instant == null)
+        {
+            return false;
+        }
+
+        return SendPlayCard(GameManager.Instant.CurrentRoomId, GameManager.Instant.LocalPlayerId, cards, declaredNumber);
+    }
+
+    public bool SendSkip(string roomId, string playerId)
+    {
+        if (!ValidateCommonActionRequest(roomId, playerId))
+        {
+            return false;
+        }
+
+        var payload = new SkipRequest
+        {
+            roomId = roomId,
+            playerId = playerId
+        };
+
+        SendNetworkMessage("SKIP", payload);
+        return true;
+    }
+
+    public bool SendSkip()
+    {
+        if (GameManager.Instant == null)
+        {
+            return false;
+        }
+
+        return SendSkip(GameManager.Instant.CurrentRoomId, GameManager.Instant.LocalPlayerId);
+    }
+
+    public bool SendLiar(string roomId, string playerId)
+    {
+        if (!ValidateCommonActionRequest(roomId, playerId))
+        {
+            return false;
+        }
+
+        var payload = new LiarRequest
+        {
+            roomId = roomId,
+            playerId = playerId
+        };
+
+        SendNetworkMessage("LIAR", payload);
+        return true;
+    }
+
+    public bool SendLiar()
+    {
+        if (GameManager.Instant == null)
+        {
+            return false;
+        }
+
+        return SendLiar(GameManager.Instant.CurrentRoomId, GameManager.Instant.LocalPlayerId);
+    }
+
+    private bool ValidateCommonActionRequest(string roomId, string playerId)
+    {
+        if (!IsConnected)
+        {
+            Debug.LogWarning("[NetworkClient] Chua ket noi server");
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(roomId) || string.IsNullOrWhiteSpace(playerId))
+        {
+            Debug.LogWarning("[NetworkClient] Request that bai: roomId/playerId rong");
+            return false;
+        }
+
+        return true;
     }
 }

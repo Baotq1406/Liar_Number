@@ -29,9 +29,13 @@ namespace LiarNumberServer.Network
             RegisterHandler("LeaveRoom", _roomHandler.HandleLeaveRoom);
             RegisterHandler("CancelRoom", _roomHandler.HandleCancelRoom);
             RegisterHandler("StartGame", _roomHandler.HandleStartGame);
+            RegisterHandler("PLAY_CARD", _roomHandler.HandlePlayCard);
+            RegisterHandler("SKIP", _roomHandler.HandleSkip);
+            RegisterHandler("LIAR", _roomHandler.HandleLiar);
+            RegisterHandler("PlayCard", _roomHandler.HandlePlayCard);
+            RegisterHandler("Skip", _roomHandler.HandleSkip);
+            RegisterHandler("CallLiar", _roomHandler.HandleLiar);
             RegisterHandler("Ready", HandleReady);
-            RegisterHandler("PlayCard", HandlePlayCard);
-            RegisterHandler("CallLiar", HandleCallLiar);
             RegisterHandler("RequestGameState", HandleRequestGameState);
         }
 
@@ -88,18 +92,6 @@ namespace LiarNumberServer.Network
         {
             Console.WriteLine($"[Handler] [{connection.ConnectionId}] XU LY Ready (chua implement)");
             // TODO: Implement ready logic
-        }
-
-        private void HandlePlayCard(string payloadJson, ClientConnection connection)
-        {
-            Console.WriteLine($"[Handler] [{connection.ConnectionId}] XU LY PlayCard (chua implement)");
-            // TODO: Implement play card logic
-        }
-
-        private void HandleCallLiar(string payloadJson, ClientConnection connection)
-        {
-            Console.WriteLine($"[Handler] [{connection.ConnectionId}] XU LY CallLiar (chua implement)");
-            // TODO: Implement call liar logic
         }
 
         private void HandleRequestGameState(string payloadJson, ClientConnection connection)

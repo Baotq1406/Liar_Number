@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("LiarNumberServer")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+a54b4d834c681e1fbff7b18bca6cdeb3f63f45c3")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+40343306f9defc3c5fa95e9ea13963b08b7a1f0f")]
 [assembly: System.Reflection.AssemblyProductAttribute("LiarNumberServer")]
 [assembly: System.Reflection.AssemblyTitleAttribute("LiarNumberServer")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

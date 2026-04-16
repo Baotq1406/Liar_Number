@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Splines;
+using DG.Tweening;
 
 public class HandManager : MonoBehaviour
 {
@@ -10,6 +11,10 @@ public class HandManager : MonoBehaviour
     [SerializeField] private int initialHandSize = 6;
     [SerializeField] private bool dealOnStart = true;
     [SerializeField] private float initialDealInterval = 0.12f;
+    [SerializeField] private bool useAuthoritativeHandOnStart = true;
+    [SerializeField] private bool useDealAnimation = true;
+    [SerializeField] private float dealAnimationDuration = 0.2f;
+    [SerializeField] private Vector3 dealSpawnOffset = new Vector3(2.8f, 0f, 0f);
     [SerializeField] private GameObject cardPrefab;
     [SerializeField] private SplineContainer splineContainer;
     [SerializeField] private Transform handAnchor;
@@ -24,9 +29,14 @@ public class HandManager : MonoBehaviour
 
     [Header("Selection UI")]
     [SerializeField] private GameObject selectionCardButtom;
+    [SerializeField] private int maxSelectedCards = 3;
 
     private readonly List<GameObject> handCards = new List<GameObject>();
     private readonly HashSet<CardInteraction> selectedCards = new HashSet<CardInteraction>();
+    private readonly HashSet<GameObject> pendingDealCards = new HashSet<GameObject>();
+    private readonly Dictionary<GameObject, Tween> dealTweens = new Dictionary<GameObject, Tween>();
+    private bool _isAdjustingSelection;
+    private int _lastAppliedRoundResetPlayId;
 
     private void Awake()
     {
@@ -35,6 +45,11 @@ public class HandManager : MonoBehaviour
 
     private void Start()
     {
+        if (useAuthoritativeHandOnStart && TryApplyAuthoritativeLocalHand())
+        {
+            return;
+        }
+
         if (dealOnStart)
         {
             StartCoroutine(DealInitialHandRoutine());
@@ -47,11 +62,13 @@ public class HandManager : MonoBehaviour
     private void OnEnable()
     {
         CardInteraction.SelectionChanged += OnCardSelectionChanged;
+        GameManager.GameInfoChanged += OnGameInfoChanged;
     }
 
     private void OnDisable()
     {
         CardInteraction.SelectionChanged -= OnCardSelectionChanged;
+        GameManager.GameInfoChanged -= OnGameInfoChanged;
     }
 
     private void Update()
@@ -79,6 +96,11 @@ public class HandManager : MonoBehaviour
 
     public void DrawCard()
     {
+        DrawCard(-1);
+    }
+
+    public void DrawCard(int cardValue)
+    {
         if (cardPrefab == null)
         {
             Debug.LogWarning("[HandManager] Card Prefab chua duoc gan.");
@@ -91,8 +113,40 @@ public class HandManager : MonoBehaviour
         }
 
         var point = GetLayoutAnchor();
-        var spawnWorldPos = point.TransformPoint(handLocalOffset);
+        var spawnOffset = handLocalOffset;
+        if (useDealAnimation)
+        {
+            spawnOffset += dealSpawnOffset;
+        }
+
+        var spawnWorldPos = point.TransformPoint(spawnOffset);
         var card = Instantiate(cardPrefab, spawnWorldPos, point.rotation, point);
+        if (cardValue >= 0)
+        {
+            var normalizedCardValue = GameManager.NormalizeCardValue(cardValue);
+            card.name = cardPrefab.name + "_" + normalizedCardValue;
+
+            var cardVisual = card.GetComponent<CardVisual>();
+            if (cardVisual == null)
+            {
+                cardVisual = card.GetComponentInChildren<CardVisual>(true);
+            }
+
+            if (cardVisual != null)
+            {
+                cardVisual.SetCardValue(normalizedCardValue);
+            }
+            else
+            {
+                Debug.LogWarning("[HandManager] Card prefab khong co CardVisual de hien thi cardValue=" + normalizedCardValue);
+            }
+        }
+
+        if (useDealAnimation)
+        {
+            pendingDealCards.Add(card);
+        }
+
         handCards.Add(card);
 
         UpdateCardPositions();
@@ -108,6 +162,57 @@ public class HandManager : MonoBehaviour
         }
     }
 
+    private bool TryApplyAuthoritativeLocalHand()
+    {
+        if (GameManager.Instant == null)
+        {
+            return false;
+        }
+
+        var authoritativeCards = GameManager.Instant.LocalHandCards;
+        if (authoritativeCards == null || authoritativeCards.Count == 0)
+        {
+            return false;
+        }
+
+        ClearHand();
+
+        for (int i = 0; i < authoritativeCards.Count; i++)
+        {
+            DrawCard(GameManager.NormalizeCardValue(authoritativeCards[i]));
+        }
+
+        Debug.Log("[HandManager] Da ap dung local hand authoritative. count=" + authoritativeCards.Count);
+        return true;
+    }
+
+    private void OnGameInfoChanged()
+    {
+        var gameManager = GameManager.Instant;
+        if (gameManager == null)
+        {
+            return;
+        }
+
+        var latestResetPlayId = gameManager.LatestRoundResetPlayId;
+        if (latestResetPlayId <= 0 || latestResetPlayId == _lastAppliedRoundResetPlayId)
+        {
+            return;
+        }
+
+        if (TryApplyAuthoritativeLocalHand())
+        {
+            _lastAppliedRoundResetPlayId = latestResetPlayId;
+            return;
+        }
+
+        if (gameManager.IsLocalPlayerDead)
+        {
+            ClearHand();
+            _lastAppliedRoundResetPlayId = latestResetPlayId;
+        }
+    }
+
     public void RemoveLastCard()
     {
         if (handCards.Count == 0)
@@ -117,6 +222,7 @@ public class HandManager : MonoBehaviour
 
         var last = handCards[handCards.Count - 1];
         handCards.RemoveAt(handCards.Count - 1);
+        KillDealTweenForCard(last);
 
         if (last != null)
         {
@@ -138,6 +244,8 @@ public class HandManager : MonoBehaviour
 
     public void ClearHand()
     {
+        KillAllDealTweens();
+
         for (int i = 0; i < handCards.Count; i++)
         {
             if (handCards[i] != null)
@@ -217,6 +325,46 @@ public class HandManager : MonoBehaviour
             return;
         }
 
+        if (useDealAnimation && pendingDealCards.Contains(card))
+        {
+            KillDealTweenForCard(card, removePending: false);
+
+            var duration = Mathf.Max(0f, dealAnimationDuration);
+            if (duration <= 0f)
+            {
+                pendingDealCards.Remove(card);
+            }
+            else
+            {
+                var seq = DOTween.Sequence();
+                seq.Join(card.transform.DOMove(position, duration).SetEase(Ease.OutCubic));
+                seq.Join(card.transform.DORotateQuaternion(rotation, duration).SetEase(Ease.OutCubic));
+                seq.OnComplete(() =>
+                {
+                    pendingDealCards.Remove(card);
+                    dealTweens.Remove(card);
+
+                    if (card == null)
+                    {
+                        return;
+                    }
+
+                    var cardInteractionAfterTween = card.GetComponent<CardInteraction>();
+                    if (cardInteractionAfterTween != null)
+                    {
+                        cardInteractionAfterTween.UpdateLayoutPose(position, rotation);
+                    }
+                    else
+                    {
+                        card.transform.SetPositionAndRotation(position, rotation);
+                    }
+                });
+
+                dealTweens[card] = seq;
+                return;
+            }
+        }
+
         var interaction = card.GetComponent<CardInteraction>();
 
         if (interaction != null)
@@ -261,6 +409,11 @@ public class HandManager : MonoBehaviour
 
     private void OnCardSelectionChanged(CardInteraction cardInteraction, bool isSelected)
     {
+        if (_isAdjustingSelection)
+        {
+            return;
+        }
+
         if (cardInteraction == null)
         {
             return;
@@ -273,6 +426,16 @@ public class HandManager : MonoBehaviour
 
         if (isSelected)
         {
+            var maxSelectable = Mathf.Max(1, maxSelectedCards);
+            if (selectedCards.Count >= maxSelectable)
+            {
+                _isAdjustingSelection = true;
+                cardInteraction.SetSelected(false);
+                _isAdjustingSelection = false;
+                Debug.LogWarning("[HandManager] Chi duoc chon toi da " + maxSelectable + " la bai.");
+                return;
+            }
+
             selectedCards.Add(cardInteraction);
         }
         else
@@ -289,5 +452,122 @@ public class HandManager : MonoBehaviour
         {
             selectionCardButtom.SetActive(selectedCards.Count > 0);
         }
+    }
+
+    public List<int> GetSelectedCardValues()
+    {
+        var result = new List<int>();
+
+        foreach (var selected in selectedCards)
+        {
+            if (selected == null)
+            {
+                continue;
+            }
+
+            var cardObject = selected.gameObject;
+            if (cardObject == null)
+            {
+                continue;
+            }
+
+            var cardVisual = cardObject.GetComponent<CardVisual>();
+            if (cardVisual == null)
+            {
+                cardVisual = cardObject.GetComponentInChildren<CardVisual>(true);
+            }
+
+            var cardValue = 0;
+            if (cardVisual != null)
+            {
+                cardValue = GameManager.NormalizeCardValue(cardVisual.CardValue);
+            }
+
+            result.Add(cardValue);
+        }
+
+        return result;
+    }
+
+    public int RemoveSelectedCards()
+    {
+        if (selectedCards.Count == 0)
+        {
+            return 0;
+        }
+
+        var removed = 0;
+        var toRemove = new List<CardInteraction>(selectedCards);
+        for (int i = 0; i < toRemove.Count; i++)
+        {
+            var interaction = toRemove[i];
+            if (interaction == null)
+            {
+                continue;
+            }
+
+            var cardObject = interaction.gameObject;
+            if (cardObject == null)
+            {
+                continue;
+            }
+
+            if (handCards.Remove(cardObject))
+            {
+                KillDealTweenForCard(cardObject);
+                Destroy(cardObject);
+                removed++;
+            }
+        }
+
+        selectedCards.Clear();
+        UpdateSelectionCardButtom();
+        UpdateCardPositions();
+        return removed;
+    }
+
+    public int GetHandCardCount()
+    {
+        handCards.RemoveAll(card => card == null);
+        return handCards.Count;
+    }
+
+    private void KillDealTweenForCard(GameObject card, bool removePending = true)
+    {
+        if (card == null)
+        {
+            return;
+        }
+
+        if (dealTweens.TryGetValue(card, out var tween) && tween != null && tween.IsActive())
+        {
+            tween.Kill();
+        }
+
+        dealTweens.Remove(card);
+        if (removePending)
+        {
+            pendingDealCards.Remove(card);
+        }
+    }
+
+    private void KillAllDealTweens()
+    {
+        foreach (var pair in dealTweens)
+        {
+            var tween = pair.Value;
+            if (tween != null && tween.IsActive())
+            {
+                tween.Kill();
+            }
+        }
+
+        dealTweens.Clear();
+        pendingDealCards.Clear();
+    }
+
+    private void OnDestroy()
+    {
+        KillAllDealTweens();
     }
 }

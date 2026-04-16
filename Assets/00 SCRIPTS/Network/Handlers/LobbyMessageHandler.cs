@@ -99,8 +99,7 @@ public class LobbyMessageHandler : MonoBehaviour
             // Luu thong tin nguoi choi vao GameManager (CHUA CO roomId)
             if (GameManager.Instant != null)
             {
-                GameManager.Instant.SetPlayerInfo(payload.playerId, payload.nickname);
-                GameManager.Instant.SetSelectedAvatarId(payload.avatarId);
+                GameManager.Instant.SetPlayerInfo(payload.playerId, payload.nickname, payload.avatarId);
                 Debug.Log("[LobbyMessageHandler] Da luu thong tin vao GameManager");
             }
             else
