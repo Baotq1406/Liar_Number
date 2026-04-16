@@ -49,8 +49,12 @@ public class RoomPlayersUpdatedPayload
 public class PlayerJoinedPayload
 {
     public string roomId;
+    public string playerId;
+    public string nickname;
     public string playerName;
     public int avatarId;
+    public int cardCount;
+    public bool isDead;
 }
 
 [Serializable]
@@ -66,14 +70,6 @@ public class RoomClosedPayload
     public string roomId;
     public string reason;
     public string closedBy;
-}
-
-[Serializable]
-public class GameStartedPayload
-{
-    public string roomId;
-    public List<string> players;
-    public int initialCardCount;
 }
 
 public class RoomMessageHandler : MonoBehaviour
@@ -126,6 +122,7 @@ public class RoomMessageHandler : MonoBehaviour
         NetworkClient.Instant.Dispatcher.RegisterHandler("RoomClosed", OnRoomClosed);
         NetworkClient.Instant.Dispatcher.RegisterHandler("CancelRoomFailed", OnCancelRoomFailed);
         NetworkClient.Instant.Dispatcher.RegisterHandler("GameStarted", OnGameStarted);
+        NetworkClient.Instant.Dispatcher.RegisterHandler("GAME_STARTED", OnGameStarted);
         NetworkClient.Instant.Dispatcher.RegisterHandler("StartGameFailed", OnStartGameFailed);
         _isRegistered = true;
 
@@ -150,6 +147,7 @@ public class RoomMessageHandler : MonoBehaviour
         NetworkClient.Instant.Dispatcher.UnregisterHandler("RoomClosed", OnRoomClosed);
         NetworkClient.Instant.Dispatcher.UnregisterHandler("CancelRoomFailed", OnCancelRoomFailed);
         NetworkClient.Instant.Dispatcher.UnregisterHandler("GameStarted", OnGameStarted);
+        NetworkClient.Instant.Dispatcher.UnregisterHandler("GAME_STARTED", OnGameStarted);
         NetworkClient.Instant.Dispatcher.UnregisterHandler("StartGameFailed", OnStartGameFailed);
         _isRegistered = false;
     }
@@ -165,6 +163,11 @@ public class RoomMessageHandler : MonoBehaviour
             {
                 Debug.LogError("[RoomMessageHandler] Payload RoomCreated khong hop le");
                 return;
+            }
+
+            if (string.IsNullOrEmpty(payload.hostNickname))
+            {
+                Debug.LogWarning("[RoomMessageHandler] RoomCreated thieu hostNickname, UI co the hien thi fallback.");
             }
 
             if (payload.hostAvatarId < 0)
@@ -213,9 +216,16 @@ public class RoomMessageHandler : MonoBehaviour
         try
         {
             var payload = JsonUtility.FromJson<PlayerJoinedPayload>(payloadJson);
-            if (payload == null || string.IsNullOrEmpty(payload.playerName))
+            var resolvedName = payload != null && !string.IsNullOrEmpty(payload.nickname) ? payload.nickname : payload?.playerName;
+            if (payload == null || string.IsNullOrEmpty(resolvedName))
             {
+                Debug.LogWarning("[RoomMessageHandler] Payload PlayerJoined null hoac thieu playerName.");
                 return;
+            }
+
+            if (string.IsNullOrEmpty(payload.roomId))
+            {
+                Debug.LogWarning("[RoomMessageHandler] Payload PlayerJoined thieu roomId.");
             }
 
             if (payload.avatarId < 0)
@@ -228,8 +238,12 @@ public class RoomMessageHandler : MonoBehaviour
             {
                 GameManager.Instant.OnPlayerJoined(new RoomPlayerState
                 {
-                    playerName = payload.playerName,
-                    avatarId = payload.avatarId
+                    playerId = payload.playerId,
+                    nickname = payload.nickname,
+                    playerName = resolvedName,
+                    avatarId = payload.avatarId,
+                    cardCount = payload.cardCount,
+                    isDead = payload.isDead
                 });
             }
         }
@@ -248,6 +262,21 @@ public class RoomMessageHandler : MonoBehaviour
             var payload = JsonUtility.FromJson<RoomStatePayload>(payloadJson);
             if (payload == null)
             {
+                Debug.LogWarning("[RoomMessageHandler] Payload RoomState null.");
+                return;
+            }
+
+            if (string.IsNullOrEmpty(payload.roomId))
+            {
+                Debug.LogWarning("[RoomMessageHandler] RoomState thieu roomId.");
+            }
+
+            if (GameManager.Instant != null &&
+                !string.IsNullOrEmpty(payload.roomId) &&
+                !string.IsNullOrEmpty(GameManager.Instant.CurrentRoomId) &&
+                !string.Equals(payload.roomId, GameManager.Instant.CurrentRoomId, StringComparison.OrdinalIgnoreCase))
+            {
+                Debug.LogWarning("[RoomMessageHandler] Bo qua RoomState khac room. payloadRoomId=" + payload.roomId + ", currentRoomId=" + GameManager.Instant.CurrentRoomId);
                 return;
             }
 
@@ -257,6 +286,24 @@ public class RoomMessageHandler : MonoBehaviour
                 {
                     Debug.LogWarning("[RoomMessageHandler] RoomState khong co danh sach players");
                 }
+
+                if (payload.players != null)
+                {
+                    for (int i = 0; i < payload.players.Count; i++)
+                    {
+                        var player = payload.players[i];
+                        if (player == null)
+                        {
+                            continue;
+                        }
+
+                        if (string.IsNullOrEmpty(player.playerName) && !string.IsNullOrEmpty(player.nickname))
+                        {
+                            player.playerName = player.nickname;
+                        }
+                    }
+                }
+
                 GameManager.Instant.OnRoomState(payload.players);
             }
         }
@@ -282,6 +329,11 @@ public class RoomMessageHandler : MonoBehaviour
             {
                 Debug.LogError("[RoomMessageHandler] Payload RoomJoined khong hop le");
                 return;
+            }
+
+            if (string.IsNullOrEmpty(payload.hostNickname))
+            {
+                Debug.LogWarning("[RoomMessageHandler] RoomJoined thieu hostNickname, UI co the hien thi fallback.");
             }
 
             if (payload.hostAvatarId < 0)
@@ -395,10 +447,16 @@ public class RoomMessageHandler : MonoBehaviour
 
         try
         {
-            var payload = JsonUtility.FromJson<GameStartedPayload>(payloadJson);
+            var payload = JsonUtility.FromJson<GameStartedEvent>(payloadJson);
             if (payload == null)
             {
+                Debug.LogWarning("[RoomMessageHandler] Payload GameStarted null.");
                 return;
+            }
+
+            if (string.IsNullOrEmpty(payload.roomId))
+            {
+                Debug.LogWarning("[RoomMessageHandler] GameStarted thieu roomId.");
             }
 
             if (GameManager.Instant != null)
@@ -407,10 +465,59 @@ public class RoomMessageHandler : MonoBehaviour
                 {
                     GameManager.Instant.SetRoomPlayers(payload.players);
                 }
+                else
+                {
+                    Debug.LogWarning("[RoomMessageHandler] GameStarted thieu players, fallback bang danh sach dang co.");
+                }
 
-                if (!GameManager.Instant.TryStartGame(payload.initialCardCount, out var errorMessage))
+                if (!GameManager.Instant.TryStartGame(payload.initialCardCount, payload.players, out var errorMessage))
                 {
                     Debug.LogWarning("[RoomMessageHandler] Khoi tao game state that bai: " + errorMessage);
+                }
+
+                if (payload.destinyCard >= 0)
+                {
+                    GameManager.Instant.SetDestinyCardValue(payload.destinyCard);
+                }
+                else
+                {
+                    Debug.LogWarning("[RoomMessageHandler] GameStarted thieu destinyCard hop le.");
+                }
+
+                var localNickname = GameManager.Instant.Nickname;
+                var foundLocalHand = false;
+
+                if (payload.hands == null || payload.hands.Count == 0)
+                {
+                    Debug.LogWarning("[RoomMessageHandler] GameStarted khong co hands.");
+                }
+                else
+                {
+                    for (int i = 0; i < payload.hands.Count; i++)
+                    {
+                        var hand = payload.hands[i];
+                        if (hand == null || string.IsNullOrEmpty(hand.playerName))
+                        {
+                            Debug.LogWarning("[RoomMessageHandler] GameStarted hand null hoac thieu playerName tai index=" + i);
+                            continue;
+                        }
+
+                        var cardCount = hand.cards != null ? hand.cards.Count : 0;
+                        GameManager.Instant.SetPlayerCardCount(hand.playerName, cardCount);
+
+                        if (!string.IsNullOrEmpty(localNickname) &&
+                            string.Equals(hand.playerName, localNickname, StringComparison.OrdinalIgnoreCase))
+                        {
+                            foundLocalHand = true;
+                            GameManager.Instant.SetLocalHandCards(hand.cards);
+                        }
+                    }
+                }
+
+                if (!foundLocalHand)
+                {
+                    Debug.LogWarning("[RoomMessageHandler] Khong tim thay hand cua local player trong GameStarted.");
+                    GameManager.Instant.SetLocalHandCards(new List<int>());
                 }
             }
 

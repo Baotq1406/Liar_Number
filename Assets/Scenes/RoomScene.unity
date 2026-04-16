@@ -662,7 +662,7 @@ MonoBehaviour:
   sendLeaveToServer: 1
   sendStartToServer: 1
   waitingPlayerText: Dang cho nguoi choi...
-  initialCardCount: 6
+  initialCardCount: 5
   avatarResourcesPath: Avatars
 --- !u!4 &332605561
 Transform:

@@ -9,6 +9,10 @@ namespace LiarNumberServer.Handlers
 {
     public class RoomHandler
     {
+        private const int CardsPerPlayer = 5;
+        private const int SpecialCard = 3;
+        private const int SpecialCardCount = 2;
+        private const int LiarResolveDelayMs = 5000;
         private readonly RoomManager _roomManager;
         private readonly Dictionary<string, string> _connectionRoomMap = new(); // connectionId -> roomId
         private readonly Dictionary<string, string> _playerRoomMap = new(); // playerId -> roomId
@@ -21,6 +25,390 @@ namespace LiarNumberServer.Handlers
         {
             _roomManager = roomManager;
             _avatarCount = Math.Max(1, avatarCount);
+        }
+
+        public void HandlePlayCard(string payloadJson, ClientConnection connection)
+        {
+            var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+
+            try
+            {
+                if (string.IsNullOrWhiteSpace(payloadJson))
+                {
+                    SendError(connection, "INVALID_PAYLOAD", "PlayCard payload is empty");
+                    return;
+                }
+
+                var request = JsonSerializer.Deserialize<PlayCardRequest>(payloadJson);
+                if (request == null)
+                {
+                    SendError(connection, "INVALID_PAYLOAD", "Invalid PlayCard payload");
+                    return;
+                }
+
+                var roomId = (request.roomId ?? string.Empty).Trim().ToUpperInvariant();
+                var playerId = (request.playerId ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(roomId) || string.IsNullOrWhiteSpace(playerId) || request.cards == null || request.cards.Count == 0)
+                {
+                    SendError(connection, "INVALID_REQUEST", "roomId, playerId and cards are required");
+                    return;
+                }
+
+                if (!string.IsNullOrWhiteSpace(connection.PlayerId) && !string.Equals(connection.PlayerId.Trim(), playerId, StringComparison.Ordinal))
+                {
+                    SendError(connection, "INVALID_REQUEST", "playerId does not match authenticated player");
+                    return;
+                }
+
+                if (!_roomManager.TryGetRoom(roomId, out var room) || room == null)
+                {
+                    SendError(connection, "ROOM_NOT_FOUND", "Room not found");
+                    return;
+                }
+
+                if (!room.IsGameStarted || room.TurnState == null)
+                {
+                    SendError(connection, "INVALID_PHASE", "Game is not started");
+                    return;
+                }
+
+                var turnState = room.TurnState;
+                if (turnState.phase != TurnPhase.WaitingPlay)
+                {
+                    SendError(connection, "INVALID_PHASE", "Room is not in WaitingPlay phase");
+                    return;
+                }
+
+                if (!room.Players.Any(p => string.Equals(p.playerId, playerId, StringComparison.Ordinal)))
+                {
+                    SendError(connection, "INVALID_REQUEST", "Player is not in room");
+                    return;
+                }
+
+                if (IsPlayerDead(room, playerId))
+                {
+                    SendError(connection, "PLAYER_DEAD", "Dead player cannot PLAY_CARD");
+                    return;
+                }
+
+                if (!string.Equals(turnState.currentTurnPlayerId, playerId, StringComparison.Ordinal))
+                {
+                    SendError(connection, "NOT_YOUR_TURN", "Not your turn");
+                    return;
+                }
+
+                var actor = room.Players.FirstOrDefault(p => string.Equals(p.playerId, playerId, StringComparison.Ordinal));
+                if (actor != null)
+                {
+                    if (actor.cardCount <= 0)
+                    {
+                        LogRoomAction(timestamp, connection.ConnectionId, playerId, roomId, "AUTO_SKIP_NO_CARDS", "current turn player has no cards -> skip to next playable player");
+                        var roundResetPayload = NextTurnClockwise(room, roomId, connection.ConnectionId, trigger: "PLAY_CARD_NO_CARDS", playId: null);
+                        if (roundResetPayload != null)
+                        {
+                            BroadcastToRoom(roomId, "ROUND_RESET", roundResetPayload);
+                        }
+
+                        BroadcastTurnUpdate(roomId, room);
+                        return;
+                    }
+
+                    if (request.cards.Count > actor.cardCount)
+                    {
+                        SendError(connection, "INVALID_REQUEST", "Played cards exceed player's card count");
+                        return;
+                    }
+                }
+
+                var playedCardCount = Math.Max(0, request.cards.Count);
+                var playId = turnState.nextPlayId == int.MaxValue ? 1 : turnState.nextPlayId + 1;
+                turnState.nextPlayId = playId;
+
+                turnState.lastPlay = new LastPlayContext
+                {
+                    playId = playId,
+                    actorPlayerId = playerId,
+                    declaredNumber = request.declaredNumber,
+                    playedCardCount = playedCardCount,
+                    cards = request.cards.ToList()
+                };
+
+                if (actor != null)
+                {
+                    actor.cardCount = Math.Max(0, actor.cardCount - playedCardCount);
+                }
+
+                turnState.phase = TurnPhase.WaitingResponses;
+                turnState.resolvingPlayId = null;
+                turnState.respondedIds.Clear();
+                turnState.pendingResponderIds = room.Players
+                    .Select(p => p.playerId)
+                    .Where(id => !string.Equals(id, playerId, StringComparison.Ordinal) && !IsPlayerDead(room, id))
+                    .ToHashSet(StringComparer.Ordinal);
+
+                var actorPayload = new ShowWaitingEvent
+                {
+                    roomId = roomId,
+                    playId = playId,
+                    actorPlayerId = playerId,
+                    message = "Waiting for other players to SKIP or LIAR",
+                    playedCardCount = playedCardCount,
+                    phase = turnState.phase
+                };
+
+                if (turnState.pendingResponderIds.Count == 0)
+                {
+                    var roundResetPayload = NextTurnClockwise(room, roomId, connection.ConnectionId, trigger: "PLAY_CARD_NO_PENDING_RESPONDERS", playId);
+                    if (roundResetPayload != null)
+                    {
+                        BroadcastToRoom(roomId, "ROUND_RESET", roundResetPayload);
+                    }
+
+                    BroadcastTurnUpdate(roomId, room);
+                    LogRoomAction(timestamp, connection.ConnectionId, playerId, roomId, "PLAY_CARD", $"playId={playId}, no pending responders -> auto next turn");
+                    return;
+                }
+
+                connection.SendMessage("SHOW_WAITING", actorPayload);
+
+                var panelPayload = new ShowLiarPanelEvent
+                {
+                    roomId = roomId,
+                    playId = playId,
+                    actorPlayerId = playerId,
+                    actorPlayerName = GetPlayerNameById(room, playerId),
+                    declaredNumber = request.declaredNumber,
+                    playedCardCount = playedCardCount,
+                    previewCards = new List<int>(),
+                    phase = turnState.phase
+                };
+
+                SendToRoomExcept(roomId, playerId, "SHOW_LIAR_PANEL", panelPayload);
+                LogRoomAction(timestamp, connection.ConnectionId, playerId, roomId, "PLAY_CARD", $"playId={playId}, playedCardCount={playedCardCount}, phase={turnState.phase}, pending={turnState.pendingResponderIds.Count}");
+            }
+            catch (JsonException e)
+            {
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] EXCEPTION PlayCard JSON: {e.Message}");
+                SendError(connection, "INVALID_PAYLOAD", "Invalid PlayCard payload");
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] EXCEPTION PlayCard: {e.Message}");
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] Stack: {e.StackTrace}");
+                SendError(connection, "INTERNAL_ERROR", "Internal server error");
+            }
+        }
+
+        public void HandleSkip(string payloadJson, ClientConnection connection)
+        {
+            var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+
+            try
+            {
+                if (string.IsNullOrWhiteSpace(payloadJson))
+                {
+                    SendError(connection, "INVALID_PAYLOAD", "Skip payload is empty");
+                    return;
+                }
+
+                var request = JsonSerializer.Deserialize<SkipRequest>(payloadJson);
+                if (request == null)
+                {
+                    SendError(connection, "INVALID_PAYLOAD", "Invalid Skip payload");
+                    return;
+                }
+
+                var roomId = (request.roomId ?? string.Empty).Trim().ToUpperInvariant();
+                var playerId = (request.playerId ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(roomId) || string.IsNullOrWhiteSpace(playerId))
+                {
+                    SendError(connection, "INVALID_REQUEST", "roomId and playerId are required");
+                    return;
+                }
+
+                if (!string.IsNullOrWhiteSpace(connection.PlayerId) && !string.Equals(connection.PlayerId.Trim(), playerId, StringComparison.Ordinal))
+                {
+                    SendError(connection, "INVALID_REQUEST", "playerId does not match authenticated player");
+                    return;
+                }
+
+                if (!_roomManager.TryGetRoom(roomId, out var room) || room == null || room.TurnState == null)
+                {
+                    SendError(connection, "ROOM_NOT_FOUND", "Room not found");
+                    return;
+                }
+
+                var turnState = room.TurnState;
+                if (turnState.phase != TurnPhase.WaitingResponses)
+                {
+                    SendError(connection, "INVALID_PHASE", "Room is not in WaitingResponses phase");
+                    return;
+                }
+
+                if (!turnState.pendingResponderIds.Contains(playerId))
+                {
+                    SendError(connection, "INVALID_REQUEST", "Player is not pending response");
+                    return;
+                }
+
+                if (IsPlayerDead(room, playerId))
+                {
+                    SendError(connection, "PLAYER_DEAD", "Dead player cannot SKIP");
+                    return;
+                }
+
+                turnState.pendingResponderIds.Remove(playerId);
+                turnState.respondedIds.Add(playerId);
+
+                if (turnState.pendingResponderIds.Count == 0)
+                {
+                    var roundResetPayload = NextTurnClockwise(room, roomId, connection.ConnectionId, trigger: "SKIP_ALL_RESPONDED", playId: turnState.lastPlay?.playId);
+                    if (roundResetPayload != null)
+                    {
+                        BroadcastToRoom(roomId, "ROUND_RESET", roundResetPayload);
+                    }
+
+                    BroadcastTurnUpdate(roomId, room);
+                }
+
+                LogRoomAction(timestamp, connection.ConnectionId, playerId, roomId, "SKIP", $"pending={turnState.pendingResponderIds.Count}");
+            }
+            catch (JsonException e)
+            {
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] EXCEPTION Skip JSON: {e.Message}");
+                SendError(connection, "INVALID_PAYLOAD", "Invalid Skip payload");
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] EXCEPTION Skip: {e.Message}");
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] Stack: {e.StackTrace}");
+                SendError(connection, "INTERNAL_ERROR", "Internal server error");
+            }
+        }
+
+        public void HandleLiar(string payloadJson, ClientConnection connection)
+        {
+            var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+
+            try
+            {
+                if (string.IsNullOrWhiteSpace(payloadJson))
+                {
+                    SendError(connection, "INVALID_PAYLOAD", "Liar payload is empty");
+                    return;
+                }
+
+                var request = JsonSerializer.Deserialize<LiarRequest>(payloadJson);
+                if (request == null)
+                {
+                    SendError(connection, "INVALID_PAYLOAD", "Invalid Liar payload");
+                    return;
+                }
+
+                var roomId = (request.roomId ?? string.Empty).Trim().ToUpperInvariant();
+                var playerId = (request.playerId ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(roomId) || string.IsNullOrWhiteSpace(playerId))
+                {
+                    SendError(connection, "INVALID_REQUEST", "roomId and playerId are required");
+                    return;
+                }
+
+                if (!string.IsNullOrWhiteSpace(connection.PlayerId) && !string.Equals(connection.PlayerId.Trim(), playerId, StringComparison.Ordinal))
+                {
+                    SendError(connection, "INVALID_REQUEST", "playerId does not match authenticated player");
+                    return;
+                }
+
+                if (!_roomManager.TryGetRoom(roomId, out var room) || room == null || room.TurnState == null)
+                {
+                    SendError(connection, "ROOM_NOT_FOUND", "Room not found");
+                    return;
+                }
+
+                if (!room.Players.Any(p => string.Equals(p.playerId, playerId, StringComparison.Ordinal)))
+                {
+                    SendError(connection, "INVALID_REQUEST", "Player is not in room");
+                    return;
+                }
+
+                if (IsPlayerDead(room, playerId))
+                {
+                    SendError(connection, "PLAYER_DEAD", "Dead player cannot LIAR");
+                    return;
+                }
+
+                RevealPlayedCardsEvent revealPayload;
+                int playId;
+                string actorPlayerId;
+                lock (_lock)
+                {
+                    var turnState = room.TurnState;
+                    if (turnState == null || turnState.phase != TurnPhase.WaitingResponses)
+                    {
+                        SendError(connection, "INVALID_PHASE", "Room is not in WaitingResponses phase");
+                        return;
+                    }
+
+                    if (turnState.lastPlay == null)
+                    {
+                        SendError(connection, "INVALID_PHASE", "No current play to reveal");
+                        return;
+                    }
+
+                    if (!turnState.pendingResponderIds.Contains(playerId))
+                    {
+                        SendError(connection, "INVALID_REQUEST", "Player is not pending response");
+                        return;
+                    }
+
+                    var lastPlay = turnState.lastPlay;
+                    playId = lastPlay.playId;
+                    if (turnState.resolvingPlayId == playId || turnState.resolvedPlayIds.Contains(playId))
+                    {
+                        LogRoomAction(timestamp, connection.ConnectionId, playerId, roomId, "LIAR_DUPLICATE_REJECT", $"playId={playId}, resolving={turnState.resolvingPlayId}, resolved={turnState.resolvedPlayIds.Contains(playId)}");
+                        SendError(connection, "PLAY_ALREADY_RESOLVING", "This play is already resolving/resolved");
+                        return;
+                    }
+
+                    if (string.Equals(lastPlay.actorPlayerId, playerId, StringComparison.Ordinal))
+                    {
+                        SendError(connection, "INVALID_REQUEST", "Actor cannot self-accuse with LIAR");
+                        return;
+                    }
+
+                    turnState.pendingResponderIds.Remove(playerId);
+                    turnState.respondedIds.Add(playerId);
+                    turnState.phase = TurnPhase.Resolving;
+                    turnState.resolvingPlayId = playId;
+
+                    actorPlayerId = lastPlay.actorPlayerId;
+                    revealPayload = new RevealPlayedCardsEvent
+                    {
+                        roomId = roomId,
+                        playId = playId,
+                        actorPlayerId = actorPlayerId,
+                        actorPlayerName = GetPlayerNameById(room, actorPlayerId),
+                        cards = lastPlay.cards.ToList()
+                    };
+                }
+
+                BroadcastToRoom(roomId, "REVEAL_PLAYED_CARDS", revealPayload);
+                LogRoomAction(timestamp, connection.ConnectionId, actorPlayerId, roomId, "REVEAL_PLAYED_CARDS", $"playId={playId}, actor={actorPlayerId}, accuser={playerId}, cards=[{string.Join(',', revealPayload.cards)}]");
+                LogRoomAction(timestamp, connection.ConnectionId, playerId, roomId, "LIAR_DELAY_START", $"playId={playId}, delayMs={LiarResolveDelayMs}");
+
+                _ = ResolveLiarAfterDelayAsync(roomId, playId, playerId, connection.ConnectionId);
+            }
+            catch (JsonException e)
+            {
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] EXCEPTION Liar JSON: {e.Message}");
+                SendError(connection, "INVALID_PAYLOAD", "Invalid Liar payload");
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] EXCEPTION Liar: {e.Message}");
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] Stack: {e.StackTrace}");
+                SendError(connection, "INTERNAL_ERROR", "Internal server error");
+            }
         }
 
         public void HandleCreateRoom(string payloadJson, ClientConnection connection)
@@ -90,6 +478,8 @@ namespace LiarNumberServer.Handlers
                     Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] THAT BAI CreateRoom: playerId={playerId}, errorCode={errorCode}, message={message}");
                     return;
                 }
+
+                room.RouletteStates[playerId] = new RouletteState();
 
                 connection.AvatarId = avatarId;
                 connection.CurrentRoomId = room.RoomId;
@@ -218,6 +608,8 @@ namespace LiarNumberServer.Handlers
                     return;
                 }
 
+                room.RouletteStates[playerId] = new RouletteState();
+
                 connection.AvatarId = avatarId;
                 connection.CurrentRoomId = roomId;
 
@@ -286,6 +678,12 @@ namespace LiarNumberServer.Handlers
                 var roomId = (request.roomId ?? string.Empty).Trim().ToUpperInvariant();
                 var playerId = (request.playerId ?? string.Empty).Trim();
 
+                if (!string.IsNullOrWhiteSpace(connection.PlayerId) && !string.Equals(connection.PlayerId.Trim(), playerId, StringComparison.Ordinal))
+                {
+                    Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] THAT BAI LeaveRoom: spoofed playerId req={playerId}, auth={connection.PlayerId}");
+                    return;
+                }
+
                 if (string.IsNullOrWhiteSpace(roomId) || string.IsNullOrWhiteSpace(playerId))
                 {
                     Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] THAT BAI LeaveRoom: roomId/playerId rong");
@@ -316,13 +714,16 @@ namespace LiarNumberServer.Handlers
                     return;
                 }
 
-                if (!_roomManager.TryLeaveRoom(roomId, playerId, out var leaveErrorCode, out var leaveErrorMessage, out _))
+                if (!_roomManager.TryLeaveRoom(roomId, playerId, out var leaveErrorCode, out var leaveErrorMessage, out var updatedRoom) || updatedRoom == null)
                 {
                     Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] THAT BAI LeaveRoom: roomId={roomId}, playerId={playerId}, errorCode={leaveErrorCode}, message={leaveErrorMessage}");
                     return;
                 }
 
+                updatedRoom.RouletteStates.Remove(playerId);
+
                 CleanupPlayerRoomMapping(playerId, roomId, connection);
+                SynchronizeTurnStateAfterPlayerRemoved(roomId, updatedRoom, playerId);
                 BroadcastRoomState(roomId);
                 BroadcastRoomPlayersUpdated(roomId);
 
@@ -343,6 +744,12 @@ namespace LiarNumberServer.Handlers
             {
                 Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] BAT DAU XU LY StartGame");
 
+                if (string.IsNullOrWhiteSpace(payloadJson))
+                {
+                    SendStartGameFailed(connection, "INVALID_PAYLOAD", "StartGame payload is empty");
+                    return;
+                }
+
                 var request = JsonSerializer.Deserialize<StartGameRequest>(payloadJson);
                 if (request == null)
                 {
@@ -352,6 +759,12 @@ namespace LiarNumberServer.Handlers
 
                 var roomId = (request.roomId ?? string.Empty).Trim().ToUpperInvariant();
                 var playerId = (request.playerId ?? string.Empty).Trim();
+
+                if (!string.IsNullOrWhiteSpace(connection.PlayerId) && !string.Equals(connection.PlayerId.Trim(), playerId, StringComparison.Ordinal))
+                {
+                    SendStartGameFailed(connection, "INVALID_REQUEST", "playerId does not match authenticated player");
+                    return;
+                }
 
                 if (string.IsNullOrWhiteSpace(roomId) || string.IsNullOrWhiteSpace(playerId))
                 {
@@ -388,14 +801,44 @@ namespace LiarNumberServer.Handlers
                     return;
                 }
 
+                var seed = unchecked((int)(DateTime.UtcNow.Ticks & 0x7FFFFFFF));
+                var random = new Random(seed);
+                var deck = BuildGameDeck();
+
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] StartGame: roomId={roomId}, playerId={playerId}, seed={seed}, deckBeforeShuffle={FormatDeckSummary(deck)}");
+                ShuffleDeck(deck, random);
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] StartGame: roomId={roomId}, playerId={playerId}, deckAfterShuffle={FormatDeckSummary(deck)}");
+
+                if (!TryDealHands(players, deck, CardsPerPlayer, out var hands, out var dealError))
+                {
+                    Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] StartGame THAT BAI: roomId={roomId}, playerId={playerId}, reason={dealError}");
+                    SendStartGameFailed(connection, "DECK_NOT_ENOUGH", dealError);
+                    return;
+                }
+
+                InitializeTurnState(room, random);
+                foreach (var player in room.Players)
+                {
+                    player.cardCount = CardsPerPlayer;
+                    player.isDead = false;
+                    room.RouletteStates[player.playerId] = new RouletteState();
+                }
+
                 room.IsGameStarted = true;
 
                 var gameStarted = new GameStartedEvent
                 {
                     roomId = roomId,
                     players = players,
-                    initialCardCount = Math.Max(0, request.initialCardCount)
+                    initialCardCount = CardsPerPlayer,
+                    destinyCard = room.TurnState?.destinyCard ?? 0,
+                    hands = hands
                 };
+
+                foreach (var hand in hands)
+                {
+                    Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] StartGame chia bai: roomId={roomId}, player={hand.playerName}, cardCount={hand.cards.Count}, cards=[{string.Join(',', hand.cards)}]");
+                }
 
                 List<ClientConnection> targets;
                 lock (_lock)
@@ -408,7 +851,9 @@ namespace LiarNumberServer.Handlers
                     target.SendMessage("GameStarted", gameStarted);
                 }
 
-                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] StartGame THANH CONG: roomId={roomId}, players={players.Count}, initialCardCount={gameStarted.initialCardCount}");
+                BroadcastTurnUpdate(roomId, room);
+
+                Console.WriteLine($"[{timestamp}] [RoomHandler] [{connection.ConnectionId}] StartGame THANH CONG: roomId={roomId}, players={players.Count}, initialCardCount={gameStarted.initialCardCount}, destinyCard={gameStarted.destinyCard}");
             }
             catch (Exception e)
             {
@@ -436,6 +881,12 @@ namespace LiarNumberServer.Handlers
                 if (string.IsNullOrWhiteSpace(request.roomId) || string.IsNullOrWhiteSpace(request.playerId))
                 {
                     SendCancelRoomFailed(connection, "INVALID_REQUEST", "roomId and playerId are required");
+                    return;
+                }
+
+                if (!string.IsNullOrWhiteSpace(connection.PlayerId) && !string.Equals(connection.PlayerId.Trim(), request.playerId.Trim(), StringComparison.Ordinal))
+                {
+                    SendCancelRoomFailed(connection, "INVALID_REQUEST", "playerId does not match authenticated player");
                     return;
                 }
 
@@ -510,9 +961,11 @@ namespace LiarNumberServer.Handlers
                 return;
             }
 
-            if (_roomManager.TryLeaveRoom(roomId, playerId, out _, out _, out _))
+            if (_roomManager.TryLeaveRoom(roomId, playerId, out _, out _, out var updatedRoom) && updatedRoom != null)
             {
+                updatedRoom.RouletteStates.Remove(playerId);
                 CleanupPlayerRoomMapping(playerId, roomId, connection);
+                SynchronizeTurnStateAfterPlayerRemoved(roomId, updatedRoom, playerId);
                 BroadcastRoomState(roomId);
                 BroadcastRoomPlayersUpdated(roomId);
             }
@@ -552,6 +1005,8 @@ namespace LiarNumberServer.Handlers
                 }
 
                 _roomPlayers.Remove(roomId);
+                removedRoom.TurnState = null;
+                removedRoom.IsGameStarted = false;
             }
 
             var targets = includeClosedBy
@@ -668,6 +1123,639 @@ namespace LiarNumberServer.Handlers
             return authoritativeAvatarId;
         }
 
+        private void InitializeTurnState(RoomInfo room, Random random)
+        {
+            var order = room.Players.Select(p => p.playerId).Where(id => !string.IsNullOrWhiteSpace(id)).ToList();
+            if (order.Count < 2)
+            {
+                room.TurnState = null;
+                return;
+            }
+
+            var currentTurnIndex = random.Next(0, order.Count);
+            var destinyCard = random.Next(0, 3);
+            room.TurnState = new RoomTurnState
+            {
+                turnOrderPlayerIds = order,
+                currentTurnIndex = currentTurnIndex,
+                currentTurnPlayerId = order[currentTurnIndex],
+                destinyCard = destinyCard,
+                nextPlayId = 0,
+                phase = TurnPhase.WaitingPlay,
+                lastPlay = null,
+                resolvingPlayId = null,
+                lastRoundResetPlayId = null,
+                resolvedPlayIds = new HashSet<int>(),
+                pendingResponderIds = new HashSet<string>(StringComparer.Ordinal),
+                respondedIds = new HashSet<string>(StringComparer.Ordinal)
+            };
+
+            if (IsPlayerDead(room, room.TurnState.currentTurnPlayerId) && !TryMoveToNextAliveTurn(room.TurnState, room))
+            {
+                room.IsGameStarted = false;
+                room.TurnState = null;
+            }
+        }
+
+        private RoundResetEvent? NextTurnClockwise(RoomInfo room, string roomId, string connectionId, string trigger, int? playId)
+        {
+            var turnState = room.TurnState;
+            if (turnState == null || turnState.turnOrderPlayerIds.Count == 0)
+            {
+                room.IsGameStarted = false;
+                room.TurnState = null;
+                return null;
+            }
+
+            if (turnState.turnOrderPlayerIds.Count < 2)
+            {
+                room.IsGameStarted = false;
+                room.TurnState = null;
+                return null;
+            }
+
+            RoundResetEvent? roundResetPayload = null;
+
+            turnState.currentTurnIndex = (turnState.currentTurnIndex + 1) % turnState.turnOrderPlayerIds.Count;
+            if (!TryMoveToNextAliveWithCards(turnState, room))
+            {
+                if (AllAlivePlayersOutOfCards(turnState, room))
+                {
+                    roundResetPayload = ResetRoundDeckAndHands(room, roomId, connectionId, trigger, playId);
+                    if (!TryMoveToNextAliveWithCards(turnState, room))
+                    {
+                        room.IsGameStarted = false;
+                        room.TurnState = null;
+                        return roundResetPayload;
+                    }
+                }
+                else
+                {
+                    room.IsGameStarted = false;
+                    room.TurnState = null;
+                    return null;
+                }
+            }
+
+            turnState.phase = TurnPhase.WaitingPlay;
+            turnState.lastPlay = null;
+            turnState.resolvingPlayId = null;
+            turnState.pendingResponderIds.Clear();
+            turnState.respondedIds.Clear();
+            return roundResetPayload;
+        }
+
+        private void SynchronizeTurnStateAfterPlayerRemoved(string roomId, RoomInfo room, string removedPlayerId)
+        {
+            var turnState = room.TurnState;
+            if (turnState == null)
+            {
+                return;
+            }
+
+            var previousTurnIndex = turnState.currentTurnIndex;
+            var removedIndex = turnState.turnOrderPlayerIds.FindIndex(id => string.Equals(id, removedPlayerId, StringComparison.Ordinal));
+            var removedWasCurrentTurn = removedIndex == previousTurnIndex;
+            if (removedIndex >= 0)
+            {
+                turnState.turnOrderPlayerIds.RemoveAt(removedIndex);
+            }
+
+            turnState.pendingResponderIds.Remove(removedPlayerId);
+            turnState.respondedIds.Remove(removedPlayerId);
+            room.RouletteStates.Remove(removedPlayerId);
+
+            if (turnState.turnOrderPlayerIds.Count < 2)
+            {
+                room.TurnState = null;
+                room.IsGameStarted = false;
+                return;
+            }
+
+            if (removedIndex >= 0)
+            {
+                if (removedWasCurrentTurn)
+                {
+                    if (turnState.currentTurnIndex >= turnState.turnOrderPlayerIds.Count)
+                    {
+                        turnState.currentTurnIndex = 0;
+                    }
+
+                    turnState.currentTurnPlayerId = turnState.turnOrderPlayerIds[turnState.currentTurnIndex];
+                    turnState.phase = TurnPhase.WaitingPlay;
+                    turnState.lastPlay = null;
+                    turnState.pendingResponderIds.Clear();
+                    turnState.respondedIds.Clear();
+                }
+                else if (removedIndex < turnState.currentTurnIndex)
+                {
+                    turnState.currentTurnIndex--;
+                }
+            }
+
+            if (turnState.currentTurnIndex < 0 || turnState.currentTurnIndex >= turnState.turnOrderPlayerIds.Count)
+            {
+                turnState.currentTurnIndex = 0;
+            }
+
+            turnState.currentTurnPlayerId = turnState.turnOrderPlayerIds[turnState.currentTurnIndex];
+
+            if (IsPlayerDead(room, turnState.currentTurnPlayerId) && !TryMoveToNextAliveTurn(turnState, room))
+            {
+                room.TurnState = null;
+                room.IsGameStarted = false;
+                return;
+            }
+
+            RoundResetEvent? roundResetPayload = null;
+
+            if (turnState.phase == TurnPhase.WaitingResponses && turnState.pendingResponderIds.Count == 0)
+            {
+                roundResetPayload = NextTurnClockwise(room, roomId, connectionId: "-", trigger: "SYNC_AFTER_REMOVE", playId: null);
+            }
+
+            if (room.IsGameStarted)
+            {
+                if (roundResetPayload != null)
+                {
+                    BroadcastToRoom(roomId, "ROUND_RESET", roundResetPayload);
+                }
+
+                BroadcastTurnUpdate(roomId, room);
+            }
+        }
+
+        private void BroadcastTurnUpdate(string roomId, RoomInfo room)
+        {
+            var turnState = room.TurnState;
+            if (turnState == null)
+            {
+                return;
+            }
+
+            if (turnState.phase == TurnPhase.WaitingPlay && !HasCards(room, turnState.currentTurnPlayerId))
+            {
+                var roundResetPayload = NextTurnClockwise(room, roomId, connectionId: "-", trigger: "TURN_UPDATE_NO_CARDS", playId: null);
+                if (roundResetPayload != null)
+                {
+                    BroadcastToRoom(roomId, "ROUND_RESET", roundResetPayload);
+                }
+
+                turnState = room.TurnState;
+                if (turnState == null)
+                {
+                    return;
+                }
+            }
+
+            var payload = new TurnUpdateEvent
+            {
+                roomId = roomId,
+                destinyCard = turnState.destinyCard,
+                currentTurnPlayerId = turnState.currentTurnPlayerId,
+                currentTurnPlayerName = GetPlayerNameById(room, turnState.currentTurnPlayerId),
+                currentTurnIndex = turnState.currentTurnIndex,
+                turnOrderPlayerIds = turnState.turnOrderPlayerIds.ToList(),
+                phase = turnState.phase
+            };
+
+            BroadcastToRoom(roomId, "TURN_UPDATE", payload);
+            BroadcastRoomState(roomId);
+        }
+
+        private async Task ResolveLiarAfterDelayAsync(string roomId, int playId, string accuserPlayerId, string connectionId)
+        {
+            await Task.Delay(LiarResolveDelayMs).ConfigureAwait(false);
+
+            var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+            ResolveResultEvent? resolvePayload = null;
+            RoomInfo? roomForTurnUpdate = null;
+            RoundResetEvent? roundResetPayload = null;
+
+            lock (_lock)
+            {
+                if (!_roomManager.TryGetRoom(roomId, out var room) || room == null)
+                {
+                    LogRoomAction(timestamp, connectionId, accuserPlayerId, roomId, "LIAR_RESOLVE_REJECT_STALE", $"playId={playId}, reason=ROOM_NOT_FOUND_AFTER_DELAY");
+                    return;
+                }
+
+                var turnState = room.TurnState;
+                if (turnState == null)
+                {
+                    LogRoomAction(timestamp, connectionId, accuserPlayerId, roomId, "LIAR_RESOLVE_REJECT_STALE", $"playId={playId}, reason=TURN_STATE_NULL_AFTER_DELAY");
+                    return;
+                }
+
+                if (turnState.lastPlay == null)
+                {
+                    LogRoomAction(timestamp, connectionId, accuserPlayerId, roomId, "LIAR_RESOLVE_REJECT_STALE", $"playId={playId}, reason=LAST_PLAY_NULL_AFTER_DELAY");
+                    return;
+                }
+
+                if (turnState.lastPlay.playId != playId)
+                {
+                    LogRoomAction(timestamp, connectionId, accuserPlayerId, roomId, "LIAR_RESOLVE_REJECT_RACE", $"playId={playId}, currentPlayId={turnState.lastPlay.playId}");
+                    return;
+                }
+
+                if (turnState.resolvedPlayIds.Contains(playId))
+                {
+                    LogRoomAction(timestamp, connectionId, accuserPlayerId, roomId, "LIAR_RESOLVE_REJECT_DUPLICATE", $"playId={playId}, reason=ALREADY_RESOLVED");
+                    return;
+                }
+
+                if (turnState.resolvingPlayId != playId)
+                {
+                    LogRoomAction(timestamp, connectionId, accuserPlayerId, roomId, "LIAR_RESOLVE_REJECT_RACE", $"playId={playId}, resolvingPlayId={turnState.resolvingPlayId}");
+                    return;
+                }
+
+                var lastPlay = turnState.lastPlay;
+                var destiny = turnState.destinyCard;
+                var revealedCards = lastPlay.cards.ToList();
+                var allMatch = revealedCards.All(c => NormalizeCard(c, destiny) == destiny);
+                var punishedPlayerId = allMatch ? accuserPlayerId : lastPlay.actorPlayerId;
+                var reason = allMatch ? "ALL_MATCH_DESTINY" : "HAS_MISMATCH";
+
+                var rouletteState = GetOrCreateRouletteState(room, punishedPlayerId);
+                var stageBefore = Math.Clamp(rouletteState.survivalStage, 1, 6);
+                var hit = Random.Shared.Next(0, 6) < stageBefore;
+                var stageAfter = stageBefore;
+
+                if (hit)
+                {
+                    ApplyDeath(room, punishedPlayerId);
+                    rouletteState.isDead = true;
+                }
+                else
+                {
+                    stageAfter = Math.Min(6, stageBefore + 1);
+                    rouletteState.survivalStage = stageAfter;
+                    roundResetPayload = ResetRoundDeckAndHands(room, roomId, connectionId, trigger: "LIAR_NO_DEATH", playId);
+                }
+
+                turnState.resolvingPlayId = null;
+                turnState.resolvedPlayIds.Add(playId);
+
+                resolvePayload = new ResolveResultEvent
+                {
+                    roomId = roomId,
+                    playId = playId,
+                    accuserPlayerId = accuserPlayerId,
+                    accusedPlayerId = lastPlay.actorPlayerId,
+                    punishedPlayerId = punishedPlayerId,
+                    liar = !allMatch,
+                    reason = reason,
+                    destinyCard = destiny,
+                    revealedCards = revealedCards,
+                    roulette = new ResolveRouletteResult
+                    {
+                        stageBefore = stageBefore,
+                        stageAfter = stageAfter,
+                        hit = hit,
+                        isDead = rouletteState.isDead
+                    }
+                };
+
+                LogRoomAction(timestamp, connectionId, accuserPlayerId, roomId, "LIAR_RESOLVE_AFTER_DELAY", $"playId={playId}, actor={lastPlay.actorPlayerId}, accuser={accuserPlayerId}, destiny={destiny}, cards=[{string.Join(',', revealedCards)}], allMatch={allMatch}, punishedPlayerId={punishedPlayerId}");
+                LogRoomAction(timestamp, connectionId, punishedPlayerId, roomId, "LIAR_ROULETTE", $"playId={playId}, stageBefore={stageBefore}, stageAfter={stageAfter}, hit={hit}, isDead={rouletteState.isDead}");
+                var punishedPlayer = room.Players.FirstOrDefault(p => string.Equals(p.playerId, punishedPlayerId, StringComparison.Ordinal));
+                LogRoomAction(timestamp, connectionId, punishedPlayerId, roomId, "LIAR_PLAYER_STATE", $"playId={playId}, cardCount={punishedPlayer?.cardCount ?? -1}, isDead={punishedPlayer?.isDead ?? false}");
+
+                var turnRoundResetPayload = NextTurnClockwise(room, roomId, connectionId, trigger: "LIAR_RESOLVE", playId);
+                roundResetPayload ??= turnRoundResetPayload;
+                roomForTurnUpdate = room;
+            }
+
+            if (resolvePayload == null)
+            {
+                return;
+            }
+
+            BroadcastToRoom(roomId, "RESOLVE_RESULT", resolvePayload);
+            if (roundResetPayload != null)
+            {
+                BroadcastToRoom(roomId, "ROUND_RESET", roundResetPayload);
+            }
+
+            if (roomForTurnUpdate?.TurnState != null)
+            {
+                BroadcastTurnUpdate(roomId, roomForTurnUpdate);
+            }
+        }
+
+        private static int NormalizeCard(int card, int destinyCard)
+        {
+            return card == SpecialCard ? destinyCard : card;
+        }
+
+        private bool IsPlayerDead(RoomInfo room, string playerId)
+        {
+            return room.Players.FirstOrDefault(p => string.Equals(p.playerId, playerId, StringComparison.Ordinal))?.isDead == true;
+        }
+
+        private RouletteState GetOrCreateRouletteState(RoomInfo room, string playerId)
+        {
+            if (!room.RouletteStates.TryGetValue(playerId, out var state))
+            {
+                state = new RouletteState();
+                room.RouletteStates[playerId] = state;
+            }
+
+            state.survivalStage = Math.Clamp(state.survivalStage, 1, 6);
+            return state;
+        }
+
+        private void ApplyDeath(RoomInfo room, string playerId)
+        {
+            var player = room.Players.FirstOrDefault(p => string.Equals(p.playerId, playerId, StringComparison.Ordinal));
+            if (player != null)
+            {
+                player.isDead = true;
+                player.cardCount = 0;
+            }
+
+            var rouletteState = GetOrCreateRouletteState(room, playerId);
+            rouletteState.isDead = true;
+        }
+
+        private bool TryMoveToNextAliveTurn(RoomTurnState turnState, RoomInfo room)
+        {
+            var total = turnState.turnOrderPlayerIds.Count;
+            if (total == 0)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < total; i++)
+            {
+                var index = (turnState.currentTurnIndex + i) % total;
+                var candidate = turnState.turnOrderPlayerIds[index];
+                if (IsPlayerDead(room, candidate))
+                {
+                    continue;
+                }
+
+                turnState.currentTurnIndex = index;
+                turnState.currentTurnPlayerId = candidate;
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool TryMoveToNextAliveWithCards(RoomTurnState turnState, RoomInfo room)
+        {
+            var total = turnState.turnOrderPlayerIds.Count;
+            if (total == 0)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < total; i++)
+            {
+                var index = (turnState.currentTurnIndex + i) % total;
+                var candidate = turnState.turnOrderPlayerIds[index];
+                if (IsPlayerDead(room, candidate) || !HasCards(room, candidate))
+                {
+                    continue;
+                }
+
+                turnState.currentTurnIndex = index;
+                turnState.currentTurnPlayerId = candidate;
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool HasCards(RoomInfo room, string playerId)
+        {
+            return room.Players.FirstOrDefault(p => string.Equals(p.playerId, playerId, StringComparison.Ordinal))?.cardCount > 0;
+        }
+
+        private bool AllAlivePlayersOutOfCards(RoomTurnState turnState, RoomInfo room)
+        {
+            var alivePlayerIds = turnState.turnOrderPlayerIds.Where(id => !IsPlayerDead(room, id)).ToList();
+            if (alivePlayerIds.Count == 0)
+            {
+                return false;
+            }
+
+            return alivePlayerIds.All(id => !HasCards(room, id));
+        }
+
+        private RoundResetEvent? ResetRoundDeckAndHands(RoomInfo room, string roomId, string connectionId, string trigger, int? playId)
+        {
+            var turnState = room.TurnState;
+            if (turnState == null)
+            {
+                return null;
+            }
+
+            if (playId.HasValue && turnState.lastRoundResetPlayId == playId.Value)
+            {
+                LogRoomAction(DateTime.Now.ToString("HH:mm:ss.fff"), connectionId, "-", roomId, "ROUND_RESET_REJECT_DUPLICATE", $"trigger={trigger}, playId={playId.Value}, reason=ALREADY_RESET_FOR_PLAY");
+                return null;
+            }
+
+            var alivePlayers = room.Players.Where(p => !p.isDead).ToList();
+            var cardsNeeded = alivePlayers.Count * CardsPerPlayer;
+            var deck = BuildGameDeck();
+            ShuffleDeck(deck, Random.Shared);
+
+            if (deck.Count < cardsNeeded)
+            {
+                LogRoomAction(DateTime.Now.ToString("HH:mm:ss.fff"), connectionId, "-", roomId, "ROUND_RESET_FAILED", $"trigger={trigger}, playId={playId?.ToString() ?? "-"}, reason=DECK_NOT_ENOUGH, needed={cardsNeeded}, available={deck.Count}");
+                return null;
+            }
+
+            var cursor = 0;
+            var hands = new List<RoundResetHandInfo>(room.Players.Count);
+            var deadPlayerIds = new List<string>();
+
+            foreach (var player in room.Players)
+            {
+                if (player.isDead)
+                {
+                    player.cardCount = 0;
+                    deadPlayerIds.Add(player.playerId);
+                    hands.Add(new RoundResetHandInfo
+                    {
+                        playerId = player.playerId,
+                        playerName = player.nickname,
+                        nickname = player.nickname,
+                        cards = new List<int>()
+                    });
+                    continue;
+                }
+
+                var cards = new List<int>(CardsPerPlayer);
+                for (var i = 0; i < CardsPerPlayer; i++)
+                {
+                    cards.Add(deck[cursor++]);
+                }
+
+                player.cardCount = cards.Count;
+                hands.Add(new RoundResetHandInfo
+                {
+                    playerId = player.playerId,
+                    playerName = player.nickname,
+                    nickname = player.nickname,
+                    cards = cards
+                });
+            }
+
+            turnState.destinyCard = Random.Shared.Next(0, 3);
+            turnState.phase = TurnPhase.WaitingPlay;
+            turnState.lastPlay = null;
+            turnState.resolvingPlayId = null;
+            if (playId.HasValue)
+            {
+                turnState.lastRoundResetPlayId = playId.Value;
+            }
+
+            turnState.pendingResponderIds.Clear();
+            turnState.respondedIds.Clear();
+
+            var aliveSummary = string.Join(",", room.Players
+                .Where(p => !p.isDead)
+                .Select(p => $"{p.playerId}:{p.cardCount}"));
+
+            var handsSummary = string.Join(";", hands.Select(h => $"{h.playerId}=[{string.Join(',', h.cards)}]"));
+            LogRoomAction(DateTime.Now.ToString("HH:mm:ss.fff"), connectionId, "-", roomId, "ROUND_RESET", $"trigger={trigger}, playId={playId?.ToString() ?? "-"}, destinyCard={turnState.destinyCard}, aliveCardCounts=[{aliveSummary}], hands={handsSummary}");
+
+            return new RoundResetEvent
+            {
+                roomId = roomId,
+                playId = playId,
+                destinyCard = turnState.destinyCard,
+                cardsPerPlayer = CardsPerPlayer,
+                hands = hands,
+                deadPlayerIds = deadPlayerIds
+            };
+        }
+
+        private void BroadcastToRoom(string roomId, string type, object payload)
+        {
+            List<ClientConnection> targets;
+            lock (_lock)
+            {
+                targets = GetRoomConnectionsSnapshotUnsafe(roomId);
+            }
+
+            foreach (var target in targets)
+            {
+                target.SendMessage(type, payload);
+            }
+        }
+
+        private void SendToRoomExcept(string roomId, string exceptPlayerId, string type, object payload)
+        {
+            List<ClientConnection> targets;
+            lock (_lock)
+            {
+                targets = GetRoomConnectionsSnapshotUnsafe(roomId);
+            }
+
+            foreach (var target in targets)
+            {
+                if (string.Equals(target.PlayerId, exceptPlayerId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                target.SendMessage(type, payload);
+            }
+        }
+
+        private string GetPlayerNameById(RoomInfo room, string playerId)
+        {
+            if (room == null || string.IsNullOrWhiteSpace(playerId))
+            {
+                return string.Empty;
+            }
+
+            return room.Players.FirstOrDefault(p => string.Equals(p.playerId, playerId, StringComparison.Ordinal))?.nickname ?? string.Empty;
+        }
+
+        private List<int> BuildGameDeck()
+        {
+            var deck = new List<int>(20);
+
+            for (var i = 0; i < 6; i++)
+            {
+                deck.Add(0);
+                deck.Add(1);
+                deck.Add(2);
+            }
+
+            for (var i = 0; i < SpecialCardCount; i++)
+            {
+                deck.Add(SpecialCard);
+            }
+
+            return deck;
+        }
+
+        private void ShuffleDeck(List<int> deck, Random random)
+        {
+            for (var i = deck.Count - 1; i > 0; i--)
+            {
+                var j = random.Next(i + 1);
+                (deck[i], deck[j]) = (deck[j], deck[i]);
+            }
+        }
+
+        private bool TryDealHands(List<string> players, List<int> deck, int cardsPerPlayer, out List<GameStartedHandInfo> hands, out string error)
+        {
+            hands = new List<GameStartedHandInfo>();
+            error = string.Empty;
+
+            var requiredCards = players.Count * cardsPerPlayer;
+            if (deck.Count < requiredCards)
+            {
+                error = $"Deck not enough cards: required={requiredCards}, available={deck.Count}";
+                return false;
+            }
+
+            var cursor = 0;
+            foreach (var player in players)
+            {
+                var cards = new List<int>(cardsPerPlayer);
+                for (var i = 0; i < cardsPerPlayer; i++)
+                {
+                    cards.Add(deck[cursor++]);
+                }
+
+                hands.Add(new GameStartedHandInfo
+                {
+                    playerName = player,
+                    cards = cards
+                });
+            }
+
+            return true;
+        }
+
+        private string FormatDeckSummary(List<int> deck)
+        {
+            if (deck.Count == 0)
+            {
+                return "[]";
+            }
+
+            var previewCount = Math.Min(12, deck.Count);
+            var preview = string.Join(',', deck.Take(previewCount));
+            if (deck.Count <= previewCount)
+            {
+                return $"[{preview}]";
+            }
+
+            return $"[{preview},... total={deck.Count}]";
+        }
+
         private void LogRoomAction(string timestamp, string connectionId, string? playerId, string? roomId, string actionName, string message)
         {
             Console.WriteLine($"[{timestamp}] [RoomHandler] [{connectionId}] action={actionName}, playerId={playerId ?? "-"}, roomId={roomId ?? "-"}, {message}");
@@ -708,8 +1796,12 @@ namespace LiarNumberServer.Handlers
                 players = room.Players
                     .Select(p => new RoomStatePlayerInfo
                     {
+                        playerId = p.playerId,
+                        nickname = p.nickname,
                         playerName = p.nickname,
-                        avatarId = ClampAvatar(p.avatarId)
+                        avatarId = ClampAvatar(p.avatarId),
+                        cardCount = p.cardCount,
+                        isDead = p.isDead
                     })
                     .ToList()
             };
@@ -769,6 +1861,17 @@ namespace LiarNumberServer.Handlers
             };
 
             connection.SendMessage("StartGameFailed", response);
+        }
+
+        private void SendError(ClientConnection connection, string code, string message)
+        {
+            var payload = new ErrorEvent
+            {
+                code = code,
+                message = message
+            };
+
+            connection.SendMessage("ERROR", payload);
         }
 
         private void BroadcastRoomPlayersUpdated(string roomId)

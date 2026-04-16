@@ -5,7 +5,7 @@ using UnityEngine;
 public class MessageDispatcher
 {
     // Luu cac handler theo type cua message
-    private readonly Dictionary<string, Action<string>> _handlers = new Dictionary<string, Action<string>>();
+    private readonly Dictionary<string, Action<string>> _handlers = new Dictionary<string, Action<string>>(StringComparer.OrdinalIgnoreCase);
 
     // Dang ky handler cho mot loai message
     public void RegisterHandler(string type, Action<string> handler)
@@ -60,16 +60,23 @@ public class MessageDispatcher
                 return;
             }
 
-            Debug.Log("[MessageDispatcher] Nhan message type: " + msg.type);
+            var type = msg.type.Trim();
+            if (string.IsNullOrEmpty(type))
+            {
+                Debug.LogWarning("[MessageDispatcher] Message type rong: " + jsonLine);
+                return;
+            }
+
+            Debug.Log("[MessageDispatcher] Nhan message type: " + type);
 
             // Tim handler tuong ung va goi
-            if (_handlers.TryGetValue(msg.type, out var handler))
+            if (_handlers.TryGetValue(type, out var handler))
             {
                 handler.Invoke(msg.payload);
             }
             else
             {
-                Debug.LogWarning("[MessageDispatcher] Khong co handler cho type: " + msg.type);
+                Debug.LogWarning("[MessageDispatcher] Khong co handler cho type: " + type);
             }
         }
         catch (Exception e)
